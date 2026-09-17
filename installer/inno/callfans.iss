@@ -4,7 +4,7 @@
 ; 自启: HKCU Run 注册 callfans-ui（用户级，tech-design 模式 A），UI 再自拉起服务
 
 #define MyAppName "callfans"
-#define MyAppVersion "0.2.1"
+#define MyAppVersion "0.2.2"
 #define MyAppExeName "callfans-ui.exe"
 
 [Setup]

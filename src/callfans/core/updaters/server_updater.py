@@ -162,7 +162,12 @@ class ServerUpdater:
 
             new_ctn = self._find_container(compose_file, service, container_name=cname)
             if new_ctn is None:
-                raise UpdateFailure("compose up 后未找到新容器")
+                # 带上现场快照，便于定位为何找不到
+                try:
+                    snapshot = ", ".join(self.docker.all_container_names()) or "（无容器）"
+                except DockerError:
+                    snapshot = "获取失败"
+                raise UpdateFailure(f"compose up 后未找到新容器（docker ps -a: {snapshot}）")
             cinfo = self.docker.inspect_container(new_ctn)
             if cinfo.get("Image") != new_image_id:
                 raise UpdateFailure("新容器未使用新镜像（image id 不符）")
@@ -204,11 +209,20 @@ class ServerUpdater:
         return None
 
     def _find_container(self, compose_file: Path, service: str, container_name: str | None = None) -> str | None:
-        """定位服务当前容器：container_name 直查优先（确定性最高），
-        compose ps 兜底——部分环境下 ps 输出不可靠（v0.1.9 实测漏检）。
+        """定位服务当前容器，三条路径（前一条失败才走后一条）：
+
+        1. container_name 直查（compose 固定名，确定性最高）
+        2. compose service 标签过滤（项目无关，不依赖 compose ps 输出格式）
+        3. compose ps（部分环境输出不可靠，v0.1.9 实测漏检）
         """
         if container_name and self.docker.container_exists(container_name):
             return container_name
+        try:
+            for name in self.docker.containers_by_service(service):
+                if not name.endswith(_OLD_SUFFIX):
+                    return name
+        except DockerError:
+            pass
         try:
             entries = self.docker.compose_ps(compose_file)
         except DockerError:
@@ -279,7 +293,9 @@ class ServerUpdater:
                 errors.append(f"移除新容器失败: {e}")
         if old_tag:
             try:
-                self.docker.compose_up(compose_file, service)  # 旧镜像重建旧容器
+                # --force-recreate：同 tag 重推场景下期望配置可能与运行中一致，
+                # 不加该参数 compose 会判 up-to-date 直接 no-op（v0.2.1 实测）
+                self.docker.compose_up(compose_file, service, force_recreate=True)
             except DockerError as e:
                 errors.append(f"旧容器重建失败: {e}")
         return "; ".join(errors) or None

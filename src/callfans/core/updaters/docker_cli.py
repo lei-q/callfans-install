@@ -97,9 +97,24 @@ class DockerCLI:
         except json.JSONDecodeError:  # 旧版本逐行输出
             return [json.loads(line) for line in out.splitlines() if line.strip()]
 
-    def compose_up(self, compose_file, service: str) -> None:
+    def compose_up(self, compose_file, service: str, force_recreate: bool = False) -> None:
         # --no-deps：只重建目标服务，不动其他服务
-        self.compose(compose_file, "up", "-d", "--no-deps", service, timeout=600)
+        args = ["up", "-d", "--no-deps"]
+        if force_recreate:
+            args.append("--force-recreate")
+        self.compose(compose_file, *args, service, timeout=600)
+
+    def containers_by_service(self, service: str) -> list[str]:
+        """按 compose service 标签过滤容器名（项目无关，比 compose ps 可靠）。"""
+        out = self._run(
+            ["ps", "-a", "--format", "{{.Names}}",
+             "--filter", f"label=com.docker.compose.service={service}"]
+        ) or ""
+        return [n for n in out.splitlines() if n.strip()]
+
+    def all_container_names(self) -> list[str]:
+        out = self._run(["ps", "-a", "--format", "{{.Names}}"]) or ""
+        return [n for n in out.splitlines() if n.strip()]
 
     def inspect_container(self, name: str) -> dict:
         return json.loads(self._run(["inspect", name]))[0]

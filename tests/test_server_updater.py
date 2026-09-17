@@ -54,8 +54,8 @@ class FakeDocker:
         # 模拟部分环境的不可靠行为：compose ps 可为空（container_name 兜底路径）
         return [{"Name": n, "Service": c["service"]} for n, c in self.containers.items()]
 
-    def compose_up(self, f, service):
-        self.actions.append(f"up:{service}")
+    def compose_up(self, f, service, force_recreate=False):
+        self.actions.append(f"up:{service}" + ("!" if force_recreate else ""))
         self._ups += 1
         ref = self._rendered(service)
         image_id = self.images.get(ref)
@@ -67,6 +67,12 @@ class FakeDocker:
         self.containers[name] = {
             "service": service, "image_id": image_id, "running": not failing,
         }
+
+    def containers_by_service(self, service):
+        return [n for n, c in self.containers.items() if c["service"] == service]
+
+    def all_container_names(self):
+        return list(self.containers)
 
     def inspect_container(self, name):
         c = self.containers[name]
@@ -327,3 +333,30 @@ def test_container_name_flow_compose_ps_unreliable(compose_file, tmp_path):
     assert fake.containers["callfans-admin"]["running"] is True
     assert "stop:callfans-admin" in " ".join(fake.actions)
     assert "rm:callfans-admin" in " ".join(fake.actions)
+
+
+def test_label_filter_discovery_without_container_name(compose_file, tmp_path):
+    """无 container_name + compose ps 失效：按 compose service 标签过滤兜底（v0.2.1 回归）。"""
+    fake = FakeDocker(compose_file, {"api": TPL})
+    fake.compose_ps = lambda f: []  # ps 失效
+    old_ref = render_ref(TPL, OLD)
+    fake.pull(old_ref)
+    fake.containers["proj-api-1"] = {"service": "api", "image_id": fake.images[old_ref], "running": True}
+    cfg = make_cfg(compose_file=compose_file, health_wait_seconds=2)
+
+    record = ServerUpdater(cfg, StateStore(tmp_path / "state.json"), fake).update(make_item())
+    assert record["result"] == "success", record["error"]
+
+
+def test_not_found_error_includes_ps_snapshot(compose_file, tmp_path):
+    """找不到新容器时，错误信息带 docker ps -a 快照便于定位。"""
+    fake = FakeDocker(compose_file, {"api": TPL})
+    fake.compose_ps = lambda f: []
+    fake.containers_by_service = lambda svc: []  # 标签过滤也找不到
+    fake.compose_up = lambda f, svc, force_recreate=False: fake.actions.append(f"up:{svc}")
+    fake.pull(render_ref(TPL, OLD))  # 本地无容器：首装路径
+    cfg = make_cfg(compose_file=compose_file, health_wait_seconds=2)
+
+    record = ServerUpdater(cfg, None, fake).update(make_item())
+    assert record["result"] == "rolled_back"
+    assert "docker ps -a" in record["error"]
