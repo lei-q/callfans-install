@@ -95,6 +95,52 @@ def test_preflight_failure_aborts_all(tmp_path):
     assert stubs["server"].items == []
 
 
+class MissingVarDocker:
+    """compose config 报缺变量（v0.1.5 Windows 实测场景）。"""
+
+    def __init__(self, missing):
+        self.missing = missing
+
+    def version_ok(self):
+        return True
+
+    def compose_config_checked(self, f):
+        return {"services": {}}, self.missing
+
+
+def test_preflight_blocks_undefined_compose_vars(tmp_path):
+    """compose 同目录 .env 缺 TIMEZONE 等变量 → preflight 拦截，不动任何容器。"""
+    from callfans.core.updaters.runner import UpdateRunner as UR  # noqa: F401
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n", encoding="utf-8"
+    )
+    docker = MissingVarDocker(["TIMEZONE", "MYSQL_ROOT_PASSWORD", "API_TAG"])
+    stubs = {"server": StubUpdater()}
+    runner = UpdateRunner(make_cfg(compose_file=compose), docker=docker,
+                          updaters=stubs, history_path=tmp_path / "h.jsonl")
+    report = runner.run(plan_of(make_item("server", "callfans/api")))
+    assert report["preflight_error"] is not None
+    # tag 变量（API_TAG）允许缺失（首装由更新器写入）；其余必须拦
+    assert "TIMEZONE" in report["preflight_error"]
+    assert "MYSQL_ROOT_PASSWORD" in report["preflight_error"]
+    assert "API_TAG" not in report["preflight_error"].split("（")[0]
+    assert stubs["server"].items == []
+
+
+def test_preflight_allows_only_tag_var_missing(tmp_path):
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  api:\n    image: h/callfans/api:${API_TAG}\n", encoding="utf-8")
+    docker = MissingVarDocker(["API_TAG"])  # 仅缺 tag 变量：合法（首装场景）
+    stubs = {"server": StubUpdater()}
+    runner = UpdateRunner(make_cfg(compose_file=compose), docker=docker,
+                          updaters=stubs, history_path=tmp_path / "h.jsonl")
+    report = runner.run(plan_of(make_item("server", "callfans/api")))
+    assert report["preflight_error"] is None
+    assert report["summary"]["success"] == 1
+
+
 def test_updater_exception_isolated(tmp_path):
     class Exploding:
         def update(self, item):

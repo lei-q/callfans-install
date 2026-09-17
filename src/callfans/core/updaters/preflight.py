@@ -38,13 +38,23 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None,
             else:
                 try:
                     d.version_ok()
-                    cfg_json = d.compose_config(compose_file)
-                    del cfg_json
+                    _, var_warnings = d.compose_config_checked(compose_file)
                     text = compose_file.read_text(encoding="utf-8")
-                    for p in [x for x in plan.pending if x.type == TYPE_SERVER]:
+                    server_items = [x for x in plan.pending if x.type == TYPE_SERVER]
+                    allowed_missing: set[str] = set()  # tag 变量首装时允许缺失（更新器会写入）
+                    for p in server_items:
                         template = find_image_template(text, p.name, cfg.harbor_project)
-                        if template is None or extract_tag_var(template) is None:
+                        var = extract_tag_var(template) if template else None
+                        if template is None or var is None:
                             errors.append(f"{p.name}: compose image 未使用 ${{VAR}} 形式（Q5）")
+                        else:
+                            allowed_missing.add(var)
+                    missing = [v for v in var_warnings if v not in allowed_missing]
+                    if missing:
+                        errors.append(
+                            f"compose 变量未定义: {', '.join(missing)}"
+                            "（需在 compose 同目录 .env 定义；tag 变量由更新器维护）"
+                        )
                 except Exception as e:
                     errors.append(f"docker/compose 不可用: {e}")
 

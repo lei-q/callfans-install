@@ -7,13 +7,17 @@ server_updater 的回滚编排依赖这些原语，测试用 Fake 注入。
 from __future__ import annotations
 
 import json
+import json
 import logging
 import os
+import re
 import subprocess
 
 from ..procs import run as proc_run
 
 log = logging.getLogger(__name__)
+
+_VAR_WARNING_RE = re.compile(r'The \\"(\w+)\\" variable is not set')  # docker logfmt 转义内层引号
 
 
 class DockerError(RuntimeError):
@@ -41,13 +45,21 @@ class DockerCLI:
     def _run(self, args: list[str], timeout: int = 300) -> str:
         proc = self._raw(args, timeout)
         if proc.returncode != 0:
-            # stderr 可能为 None（Windows 控制台句柄差异），空时带出 stdout
-            #（compose 有时把错误打到 stdout），保证真实失败原因可见
-            stderr = (proc.stderr or "").strip()
-            stdout = (proc.stdout or "").strip()
-            detail = stderr or stdout
-            raise DockerError(f"docker {' '.join(args[:4])} 失败: {detail[:300]}")
+            # stderr 可能为 None（Windows 控制台句柄差异），空时带出 stdout；
+            # 过滤 level=warning 行（compose 的变量告警会淹没真实错误），保留尾部
+            detail = self._failure_detail(proc.stderr, proc.stdout)
+            raise DockerError(f"docker {' '.join(args[:4])} 失败: {detail}")
         return proc.stdout or ""
+
+    @staticmethod
+    def _failure_detail(stderr: str | None, stdout: str | None) -> str:
+        def drop_warnings(text: str) -> str:
+            return "\n".join(
+                line for line in (text or "").splitlines() if "level=warning" not in line
+            ).strip()
+
+        detail = drop_warnings(stderr) or drop_warnings(stdout)
+        return detail[-300:] if detail else "(无输出)"
 
     def compose(self, compose_file, *args: str, timeout: int = 300) -> str:
         return self._run(["compose", "-f", str(compose_file), *args], timeout=timeout)
@@ -60,7 +72,20 @@ class DockerCLI:
         return True
 
     def compose_config(self, compose_file) -> dict:
-        return json.loads(self.compose(compose_file, "config", "--format", "json"))
+        return self.compose_config_checked(compose_file)[0]
+
+    def compose_config_checked(self, compose_file) -> tuple[dict, list[str]]:
+        """返回 (配置, 未定义变量列表)。preflight 用后者提前拦截 .env 缺变量。"""
+        proc = self._raw(["compose", "-f", str(compose_file), "config", "--format", "json"])
+        if proc.returncode != 0:
+            raise DockerError(f"compose 解析失败: {self._failure_detail(proc.stderr, proc.stdout)}")
+        output = (proc.stderr or "") + (proc.stdout or "")
+        warnings = sorted(set(_VAR_WARNING_RE.findall(output)))
+        try:
+            config = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError as e:
+            raise DockerError(f"compose config 输出解析失败: {e}") from e
+        return config, warnings
 
     def compose_ps(self, compose_file) -> list[dict]:
         out = self.compose(compose_file, "ps", "-a", "--format", "json").strip()
