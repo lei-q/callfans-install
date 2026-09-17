@@ -17,11 +17,13 @@ TPL = "harbor.example.com/callfans/api:${API_TAG}"
 class FakeDocker:
     """按 server_updater 用到的原语模拟 docker 行为（内存态）。"""
 
-    def __init__(self, compose_file, templates: dict[str, str], fail_up=False, health="healthy"):
+    def __init__(self, compose_file, templates: dict[str, str], fail_up=False, health="healthy",
+                 container_names: dict[str, str] | None = None):
         self.compose_file = compose_file
         self.templates = templates
         self.fail_up = fail_up  # 仅让首次 up（新镜像）失败；回滚重建的旧镜像正常启动
         self.health = health
+        self.container_names = container_names or {}
         self.containers: dict[str, dict] = {}
         self.images: dict[str, str] = {}
         self.env_exclusions: set[str] = set()
@@ -40,9 +42,16 @@ class FakeDocker:
         return render_ref(tpl, env.get(var, "latest"), env=env)
 
     def compose_config(self, f):
-        return {"services": {svc: {"image": self._rendered(svc)} for svc in self.templates}}
+        services = {}
+        for svc in self.templates:
+            entry = {"image": self._rendered(svc)}
+            if svc in self.container_names:
+                entry["container_name"] = self.container_names[svc]
+            services[svc] = entry
+        return {"services": services}
 
     def compose_ps(self, f):
+        # 模拟部分环境的不可靠行为：compose ps 可为空（container_name 兜底路径）
         return [{"Name": n, "Service": c["service"]} for n, c in self.containers.items()]
 
     def compose_up(self, f, service):
@@ -52,7 +61,7 @@ class FakeDocker:
         image_id = self.images.get(ref)
         if image_id is None:
             raise DockerError(f"pull required for {ref}")
-        name = f"proj-{service}-1"
+        name = self.container_names.get(service) or f"proj-{service}-1"
         self.containers.pop(name, None)  # compose 用同名重建
         failing = self.fail_up and self._ups == 1  # 只有新镜像这次失败
         self.containers[name] = {
@@ -301,3 +310,20 @@ def test_find_container_falls_back_to_container_name(compose_file):
     updater = SU(make_cfg(compose_file=compose_file), None, fake)
     found = updater._find_container(compose_file, "api", container_name="callfans-admin")
     assert found == "callfans-admin"
+
+
+def test_container_name_flow_compose_ps_unreliable(compose_file, tmp_path):
+    """v0.2.0 回归：compose ps 完全不可用时，container_name 固定名场景全链路仍可工作。"""
+    fake = FakeDocker(compose_file, {"api": TPL}, container_names={"api": "callfans-admin"})
+    fake.compose_ps = lambda f: []  # 模拟 ps 不可靠（返回空）
+    old_ref = render_ref(TPL, OLD)
+    fake.pull(old_ref)
+    fake.containers["callfans-admin"] = {"service": "api", "image_id": fake.images[old_ref], "running": True}
+    cfg = make_cfg(compose_file=compose_file, health_wait_seconds=2)
+
+    record = ServerUpdater(cfg, StateStore(tmp_path / "state.json"), fake).update(make_item())
+
+    assert record["result"] == "success", record["error"]
+    assert fake.containers["callfans-admin"]["running"] is True
+    assert "stop:callfans-admin" in " ".join(fake.actions)
+    assert "rm:callfans-admin" in " ".join(fake.actions)

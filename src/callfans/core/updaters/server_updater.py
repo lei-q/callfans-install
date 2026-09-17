@@ -132,10 +132,8 @@ class ServerUpdater:
         # 让 .env 成为 tag 唯一事实源（compose 调用时剔除 shell 环境变量覆盖）
         self.docker.env_exclusions.add(var)
 
-        old_ctn = self._find_container(
-            compose_file, service,
-            container_name=(cfg_json.get("services", {}).get(service, {}) or {}).get("container_name"),
-        )
+        cname = (cfg_json.get("services", {}).get(service, {}) or {}).get("container_name")
+        old_ctn = self._find_container(compose_file, service, container_name=cname)
         new_ctn: str | None = None
         env_written = False
         old_image_id: str | None = None
@@ -162,7 +160,7 @@ class ServerUpdater:
             self._emit(item, "up", service=service)
             self.docker.compose_up(compose_file, service)
 
-            new_ctn = self._find_container(compose_file, service)
+            new_ctn = self._find_container(compose_file, service, container_name=cname)
             if new_ctn is None:
                 raise UpdateFailure("compose up 后未找到新容器")
             cinfo = self.docker.inspect_container(new_ctn)
@@ -206,11 +204,11 @@ class ServerUpdater:
         return None
 
     def _find_container(self, compose_file: Path, service: str, container_name: str | None = None) -> str | None:
-        """定位服务当前容器：先按 compose 项目查，再按固定 container_name 直查兜底。
-
-        旧容器可能由别的 compose 项目 / 旧版 docker-compose 创建（本项目 ps 找不到），
-        compose up 会因 container_name 冲突失败，必须先停删。
+        """定位服务当前容器：container_name 直查优先（确定性最高），
+        compose ps 兜底——部分环境下 ps 输出不可靠（v0.1.9 实测漏检）。
         """
+        if container_name and self.docker.container_exists(container_name):
+            return container_name
         try:
             entries = self.docker.compose_ps(compose_file)
         except DockerError:
@@ -222,8 +220,6 @@ class ServerUpdater:
             svc = e.get("Service") or (e.get("Labels") or {}).get("com.docker.compose.service")
             if svc == service:
                 return name
-        if container_name and self.docker.container_exists(container_name):
-            return container_name
         return None
 
     def _verify(self, new_ctn: str) -> None:
