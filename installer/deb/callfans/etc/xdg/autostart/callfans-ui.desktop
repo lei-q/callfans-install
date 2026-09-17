@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=callfans 更新器
+Exec=/opt/callfans/gui/callfans-ui
+Terminal=false
+X-GNOME-Autostart-enabled=true

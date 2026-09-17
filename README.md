@@ -24,9 +24,21 @@ callfans-ui                # 托盘 + 窗口（需 gui extra，通过服务 IPC 
 pytest                     # 单元测试（无需 Harbor/docker）
 ```
 
+## 构建与安装（M4）
+
+| 平台 | 命令（在装好 `.[dev,gui]` + `pyinstaller` 的环境执行） | 产物 |
+|------|------|------|
+| Linux（须 Ubuntu 20.04，glibc 2.31 基线） | `installer/build.sh` | `dist/callfans-service_*.deb`（无 GUI）+ `dist/callfans_*.deb`（GUI） |
+| Windows | `installer/build.ps1`（Inno Setup 可选） | `dist/callfans-setup-x64.exe` |
+
+- CI：`.github/workflows/release.yml`（Linux 在 ubuntu:20.04 容器内构建；打 `v*` tag 自动发 Release）
+- **deb 系统级**：`callfans-service` 以 systemd 服务运行（root），配置 `/etc/callfans/.env`，runtime 共享文件 `/run/callfans/runtime.json`；桌面用户加入 `callfans` 组即可用 GUI 包的托盘
+- **Linux 单用户（无 root）**：`callfans service install --env .env`（systemd 用户级 + UI 自启），headless 再执行 `loginctl enable-linger $USER`
+- **Windows 模式 A**：安装器注册 HKCU Run 自启 `callfans-ui`，UI 检测到服务未运行时自动拉起（`ui/bootstrap.py`）
+
 ## 状态
 
 - [x] M1 core（harbor/compare/checker）+ service + CLI，检查链路（已对真实 Harbor 验证）
 - [x] M2 三种更新执行器 + 回滚 + 更新历史 + POST /update
 - [x] M3 托盘 UI（`callfans-ui`，需 `pip install ".[gui]"`；代码完成，待 Windows 真机验证）
-- [ ] M4 打包安装器（Inno Setup / .deb）
+- [x] M4 打包（spec×2 + Inno + deb×2 + CI；spec 已本机构建验证，正式产物需 Linux/Windows 环境出）

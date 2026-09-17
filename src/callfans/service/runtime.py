@@ -21,7 +21,7 @@ def write_runtime(path: Path, port: int, token: str, pid: int) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
-        os.chmod(tmp, 0o600)
+        os.chmod(tmp, 0o640)  # 系统级安装时组（callfans）可读，桌面 UI 由此访问 IPC
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):

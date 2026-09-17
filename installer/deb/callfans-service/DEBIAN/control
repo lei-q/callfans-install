@@ -1,0 +1,11 @@
+Package: callfans-service
+Version: __VERSION__
+Architecture: amd64
+Maintainer: callfans <ops@callfans.local>
+Depends: systemd
+Recommends: docker.io | docker-ce
+Section: admin
+Priority: optional
+Description: callfans 镜像更新服务
+ Harbor 版本检查与更新（server 容器 / 前端静态文件 / SQL），
+ 无桌面环境可安装运行，CLI: callfans。

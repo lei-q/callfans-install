@@ -1,0 +1,19 @@
+#!/bin/bash
+set -e
+
+getent group callfans >/dev/null 2>&1 || groupadd --system callfans
+
+# 首次安装生成 .env
+if [ ! -f /etc/callfans/.env ]; then
+  cp /etc/callfans/.env.example /etc/callfans/.env
+  chmod 640 /etc/callfans/.env
+  chown root:callfans /etc/callfans/.env
+  echo "已生成 /etc/callfans/.env（请填写 Harbor/MySQL 等配置后重启服务）"
+fi
+
+systemctl daemon-reload
+systemctl enable --now callfans.service
+
+echo
+echo "提示: 桌面用户如需使用托盘 UI，请将其加入 callfans 组:"
+echo "  sudo usermod -aG callfans \$USER   # 重新登录生效"

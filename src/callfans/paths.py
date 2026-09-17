@@ -1,5 +1,6 @@
 """平台标准路径（platformdirs 封装）。"""
 
+import os
 from pathlib import Path
 
 from platformdirs import PlatformDirs
@@ -7,6 +8,10 @@ from platformdirs import PlatformDirs
 APP_NAME = "callfans"
 
 _dirs = PlatformDirs(APP_NAME, appauthor=False)
+
+# 系统级安装（.deb，服务以 root 运行）的共享 runtime 文件位置；
+# 用户级安装不受影响（candidates 依次探测）
+SYSTEM_RUNTIME_FILE = Path("/run/callfans/runtime.json")
 
 
 def state_file() -> Path:
@@ -30,7 +35,27 @@ def log_file() -> Path:
 
 
 def runtime_file() -> Path:
-    """IPC runtime 文件（port/token/pid），放用户级运行时目录。"""
+    """IPC runtime 文件写入位置（port/token/pid）。
+
+    优先环境变量 CALLFANS_RUNTIME_FILE（系统级 systemd unit 注入
+    /run/callfans/runtime.json），默认用户级运行时目录。
+    """
+    env = os.environ.get("CALLFANS_RUNTIME_FILE")
+    if env:
+        p = Path(env)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
     d = Path(_dirs.user_runtime_dir)
     d.mkdir(parents=True, exist_ok=True)
     return d / "runtime.json"
+
+
+def runtime_candidates() -> list[Path]:
+    """runtime 文件读取探测顺序：环境变量 → 用户级 → 系统级。"""
+    cands = []
+    env = os.environ.get("CALLFANS_RUNTIME_FILE")
+    if env:
+        cands.append(Path(env))
+    cands.append(Path(_dirs.user_runtime_dir) / "runtime.json")
+    cands.append(SYSTEM_RUNTIME_FILE)
+    return cands

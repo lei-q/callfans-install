@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 gui = ["PySide6>=6.6"]
+build = ["pyinstaller>=6.6"]
 
 [project.scripts]
 callfans = "callfans.cli:main"

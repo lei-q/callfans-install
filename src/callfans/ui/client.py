@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..paths import runtime_file
+from ..paths import runtime_candidates
 from ..service.runtime import read_runtime
 
 
@@ -12,9 +12,17 @@ class ServiceUnavailable(RuntimeError):
     """服务未运行或不可达。"""
 
 
+def _find_runtime() -> dict | None:
+    for cand in runtime_candidates():
+        rt = read_runtime(cand)
+        if rt and rt.get("port") and rt.get("token"):
+            return rt
+    return None
+
+
 def _connect(timeout: float = 5.0) -> httpx.Client:
-    rt = read_runtime(runtime_file())
-    if not rt or not rt.get("port") or not rt.get("token"):
+    rt = _find_runtime()
+    if rt is None:
         raise ServiceUnavailable("服务未运行（可先启动 callfans serve）")
     client = httpx.Client(
         base_url=f"http://127.0.0.1:{rt['port']}",

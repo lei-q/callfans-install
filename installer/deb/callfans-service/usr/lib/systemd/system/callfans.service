@@ -1,0 +1,15 @@
+[Unit]
+Description=callfans 更新服务
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 系统级服务以 root 运行（访问 docker）；runtime 文件放共享路径（tmpfiles.d 创建）
+Environment=CALLFANS_RUNTIME_FILE=/run/callfans/runtime.json
+ExecStart=/opt/callfans/service/callfans-service --env /etc/callfans/.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

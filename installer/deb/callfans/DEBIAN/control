@@ -1,0 +1,10 @@
+Package: callfans
+Version: __VERSION__
+Architecture: amd64
+Maintainer: callfans <ops@callfans.local>
+Depends: callfans-service (= __VERSION__)
+Section: admin
+Priority: optional
+Description: callfans 托盘 UI（GNOME/KDE 桌面）
+ 依赖 callfans-service；登录后自启动托盘，
+ 通过 /run/callfans/runtime.json 访问系统服务 IPC（需加入 callfans 组）。

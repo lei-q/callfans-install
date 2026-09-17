@@ -16,18 +16,28 @@ from .config import Config, ConfigError
 from .core.checker import Checker
 from .core.harbor import HarborClient
 from .core.local import StateStore
-from .paths import runtime_file, state_file
+from .paths import runtime_candidates, state_file
 from .service.runtime import read_runtime
 
 app = typer.Typer(no_args_is_help=True, help="callfans 镜像更新器")
+service_app = typer.Typer(help="服务安装管理（Linux systemd 用户级）")
+app.add_typer(service_app, name="service")
 
 EnvOpt = typer.Option(Path(".env"), "--env", help=".env 配置路径")
 
 
+def _runtime_info() -> dict | None:
+    for cand in runtime_candidates():
+        rt = read_runtime(cand)
+        if rt and rt.get("port") and rt.get("token"):
+            return rt
+    return None
+
+
 def _service_client() -> httpx.Client | None:
     """服务可达则返回带鉴权的客户端，否则 None。"""
-    rt = read_runtime(runtime_file())
-    if not rt or not rt.get("port") or not rt.get("token"):
+    rt = _runtime_info()
+    if rt is None:
         return None
     client = httpx.Client(
         base_url=f"http://127.0.0.1:{rt['port']}",
@@ -195,6 +205,37 @@ def status(env: Path = EnvOpt) -> None:
             typer.echo(f"{k}: {v}")
     finally:
         client.close()
+
+
+@service_app.command("install")
+def service_install(
+    env: Path = EnvOpt,
+    autostart_ui: bool = typer.Option(True, "--autostart-ui/--no-autostart-ui",
+                                      help="同时写入桌面自启（~/.config/autostart）"),
+) -> None:
+    """安装并启动用户级 systemd 服务（无需 root）。"""
+    from .service.install import InstallError, install_user_service
+
+    try:
+        unit = install_user_service(env, autostart_ui=autostart_ui)
+    except InstallError as e:
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.secho(f"已安装并启动: {unit}", fg=typer.colors.GREEN)
+    typer.echo("headless 无人值守运行还需执行一次: loginctl enable-linger $USER")
+
+
+@service_app.command("uninstall")
+def service_uninstall() -> None:
+    """停止并移除用户级服务与桌面自启。"""
+    from .service.install import InstallError, uninstall_user_service
+
+    try:
+        uninstall_user_service()
+    except InstallError as e:
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.secho("已卸载", fg=typer.colors.GREEN)
 
 
 def main() -> None:

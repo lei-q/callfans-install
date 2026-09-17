@@ -1,0 +1,66 @@
+name: build-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    # 在 ubuntu:20.04 容器内构建，glibc 2.31 基线，产物兼容 Ubuntu 20.04+
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends
+             ca-certificates curl git binutils dpkg-dev
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/bin/python -e ".[dev,gui]" "pyinstaller>=6.6"
+      - run: .venv/bin/python -m pytest -q
+      - run: .venv/bin/python -m PyInstaller --clean --noconfirm installer/service.spec
+      - run: .venv/bin/python -m PyInstaller --clean --noconfirm installer/gui.spec
+      - run: installer/build-deb.sh
+        env:
+          PY: .venv/bin/python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: dist/*.deb
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/Scripts/python.exe -e ".[dev,gui]" "pyinstaller>=6.6"
+      - run: $env:QT_QPA_PLATFORM="offscreen"; .venv\Scripts\python.exe -m pytest -q
+      - run: .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm installer/service.spec
+      - run: .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm installer/gui.spec
+      - name: Inno Setup
+        shell: cmd
+        run: |
+          choco install innosetup -y --no-progress
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\inno\callfans.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/callfans-setup-x64.exe
+
+  release:
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**

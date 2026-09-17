@@ -97,7 +97,16 @@ class MainWindow(QMainWindow):
 
     def refresh(self) -> None:
         """轮询入口（也可手动调用立即刷新）。"""
-        self._run(lambda: (client.status(), client.pending()), self._apply_state)
+        self._run(lambda: (client.status(), client.pending()),
+                  self._apply_state, self._refresh_failed)
+
+    def _refresh_failed(self, error: str) -> None:
+        """服务不可达：尝试自拉起（Windows 模式 A），并给出状态提示。"""
+        from .bootstrap import ensure_service_running
+
+        self.label_status.setText("服务未运行，正在尝试启动…")
+        self._spawn_state = getattr(self, "_spawn_state", {})
+        ensure_service_running(self._spawn_state)
 
     def _apply_state(self, result) -> None:
         status, pending = result
