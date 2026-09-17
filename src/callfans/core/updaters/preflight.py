@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ...config import Config
 from ..models import TYPE_FRONTEND, TYPE_SERVER, TYPE_SQL, UpdatePlan
-from .compose_env import extract_tag_var, find_image_template
+from .compose_env import extract_tag_var, find_image_template, iter_image_templates
 from .docker_cli import DockerCLI
 
 _MIN_FREE_BYTES = 100 * 1024 * 1024  # 100MB
@@ -40,16 +40,16 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None,
                     d.version_ok()
                     _, var_warnings = d.compose_config_checked(compose_file)
                     text = compose_file.read_text(encoding="utf-8")
-                    server_items = [x for x in plan.pending if x.type == TYPE_SERVER]
-                    allowed_missing: set[str] = set()  # tag 变量首装时允许缺失（更新器会写入）
-                    for p in server_items:
+                    # 所有 tag 变量放行（更新器写入目标 tag / backfill 回填当前版本），
+                    # 无论该服务本次是否有待更新；非 tag 变量缺失仍拦截
+                    tag_vars = {
+                        v for v in (extract_tag_var(t) for t in iter_image_templates(text)) if v
+                    }
+                    for p in [x for x in plan.pending if x.type == TYPE_SERVER]:
                         template = find_image_template(text, p.name, cfg.harbor_project)
-                        var = extract_tag_var(template) if template else None
-                        if template is None or var is None:
+                        if template is None or extract_tag_var(template) is None:
                             errors.append(f"{p.name}: compose image 未使用 ${{VAR}} 形式（Q5）")
-                        else:
-                            allowed_missing.add(var)
-                    missing = [v for v in var_warnings if v not in allowed_missing]
+                    missing = [v for v in var_warnings if v not in tag_vars]
                     if missing:
                         errors.append(
                             f"compose 变量未定义: {', '.join(missing)}"

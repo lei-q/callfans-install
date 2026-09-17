@@ -110,22 +110,26 @@ class MissingVarDocker:
 
 def test_preflight_blocks_undefined_compose_vars(tmp_path):
     """compose 同目录 .env 缺 TIMEZONE 等变量 → preflight 拦截，不动任何容器。"""
-    from callfans.core.updaters.runner import UpdateRunner as UR  # noqa: F401
-
     compose = tmp_path / "docker-compose.yml"
     compose.write_text(
-        "services:\n  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n", encoding="utf-8"
+        "services:\n"
+        "  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n"
+        "  scrcpy:\n    image: ${HARBOR_REGISTRY}/callfans/scrcpy-live:${SCRCPY_LIVE_TAG}\n",
+        encoding="utf-8",
     )
-    docker = MissingVarDocker(["TIMEZONE", "MYSQL_ROOT_PASSWORD", "API_TAG"])
+    # SCRCPY_LIVE_TAG 属于本次无待更新的服务，同为 tag 变量也须放行（v0.1.7 回归）
+    docker = MissingVarDocker(["TIMEZONE", "MYSQL_ROOT_PASSWORD", "API_TAG", "SCRCPY_LIVE_TAG"])
     stubs = {"server": StubUpdater()}
     runner = UpdateRunner(make_cfg(compose_file=compose), docker=docker,
                           updaters=stubs, history_path=tmp_path / "h.jsonl")
     report = runner.run(plan_of(make_item("server", "callfans/api")))
     assert report["preflight_error"] is not None
-    # tag 变量（API_TAG）允许缺失（首装由更新器写入）；其余必须拦
+    # 非 tag 变量必须拦
     assert "TIMEZONE" in report["preflight_error"]
     assert "MYSQL_ROOT_PASSWORD" in report["preflight_error"]
-    assert "API_TAG" not in report["preflight_error"].split("（")[0]
+    # tag 变量（含非待更新服务的）一律放行
+    assert "API_TAG" not in report["preflight_error"]
+    assert "SCRCPY_LIVE_TAG" not in report["preflight_error"]
     assert stubs["server"].items == []
 
 
