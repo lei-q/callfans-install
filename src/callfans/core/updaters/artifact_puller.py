@@ -19,7 +19,10 @@ class ArtifactPullError(RuntimeError):
 
 class ArtifactPuller:
     def __init__(self, registry_base_url: str, username: str, password: str):
-        self.host = urlparse(registry_base_url).netloc or registry_base_url
+        parsed = urlparse(registry_base_url)
+        self.host = parsed.netloc or registry_base_url
+        # 跟随配置的 scheme：http:// 仓库以 insecure=True 构造（oras-py 语义为改走 http）
+        self.insecure = parsed.scheme == "http"
         self.username = username
         self.password = password
 
@@ -27,7 +30,7 @@ class ArtifactPuller:
         """拉取 artifact 到调用方提供的目录（生命周期归调用方），返回文件列表。"""
         from oras.client import OrasClient
 
-        client = OrasClient(hostname=self.host)
+        client = OrasClient(hostname=self.host, insecure=self.insecure)
         # 直接设置 basic auth（login() 会依赖 docker CLI，不必走）
         client.auth.set_basic_auth(self.username, self.password)
         target = f"{self.host}/{repo_full}:{tag}"

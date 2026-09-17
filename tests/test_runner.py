@@ -97,3 +97,15 @@ def test_updater_exception_isolated(tmp_path):
     report = runner.run(plan_of(make_item("server", "callfans/api")))
     assert report["summary"]["failed"] == 1
     assert "boom" in report["items"][0]["error"]
+
+
+def test_artifact_puller_follows_scheme():
+    """http:// 仓库 → oras-py insecure（走 http）；https/无 scheme → 默认 https。"""
+    from callfans.core.updaters.artifact_puller import ArtifactPuller
+
+    p = ArtifactPuller("http://172.25.1.220", "u", "pw")
+    assert p.host == "172.25.1.220" and p.insecure is True
+    p2 = ArtifactPuller("https://harbor.example.com", "u", "pw")
+    assert p2.host == "harbor.example.com" and p2.insecure is False
+    p3 = ArtifactPuller("harbor.example.com", "u", "pw")
+    assert p3.host == "harbor.example.com" and p3.insecure is False
