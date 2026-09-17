@@ -48,6 +48,16 @@ def extract_tag_var(template: str) -> str | None:
     return vars_[-1] if vars_ else None
 
 
+def iter_image_templates(text: str) -> list[str]:
+    """compose 原文中全部 image 模板（含无变量的）。"""
+    return [m.group(1) for m in _IMAGE_LINE_RE.finditer(text)]
+
+
+def strip_vars(template: str) -> str:
+    """去掉模板中全部变量后剩余部分（用于识别 repo）。"""
+    return _VAR_RE.sub("", template)
+
+
 def render_ref(template: str, tag: str, var: str | None = None, env: dict | None = None) -> str:
     """把 tag 变量替换为具体 tag；其余变量（如 ${HARBOR_REGISTRY}）用 env 值解析。
 

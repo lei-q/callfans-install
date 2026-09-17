@@ -73,6 +73,17 @@ class UpdateRunner:
             "total": len(items),
             "items": [{"name": i.name, "type": i.type} for i in items],
         })
+        if TYPE_SERVER in {p.type for p in items}:
+            try:  # tag 变量不手写：缺失的按本地当前版本补齐（失败不阻断更新）
+                from .server_updater import backfill_tag_vars
+
+                filled = backfill_tag_vars(self.cfg)
+                if filled:
+                    self.on_event("update_progress", {
+                        "item": "(compose)", "stage": "tag_backfill", "vars": filled,
+                    })
+            except Exception:
+                log.exception("tag 变量回填失败（不影响更新）")
         for item in items:
             self.on_event("update_progress", {"item": item.name, "type": item.type, "stage": "start"})
             try:

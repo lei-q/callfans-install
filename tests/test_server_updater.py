@@ -2,7 +2,7 @@
 
 import pytest
 
-from callfans.core.local import StateStore
+from callfans.core.local import DockerError, DockerImage, StateStore
 from callfans.core.models import PendingItem, TYPE_SERVER
 from callfans.core.updaters.compose_env import read_env, render_ref
 from callfans.core.updaters.docker_cli import DockerError
@@ -230,3 +230,61 @@ def test_registry_var_undefined_rejected(compose_file, tmp_path):
     record = ServerUpdater(cfg, None, fake).update(make_item())
     assert record["result"] == "rolled_back"
     assert "未定义变量" in record["error"]
+
+
+class TestBackfillTagVars:
+    """*_TAG 不手写：缺失变量按本地当前版本自动补齐。"""
+
+    COMPOSE_TEXT = (
+        "services:\n"
+        "  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n"
+        "  worker:\n    image: ${HARBOR_REGISTRY}/callfans/worker:${WORKER_TAG}\n"
+        "  db:\n    image: mysql:8.0.24\n"
+    )
+
+    def _patch_images(self, monkeypatch, rows):
+        import callfans.core.updaters.server_updater as su
+
+        monkeypatch.setattr(su, "docker_images", lambda: rows)
+
+    def test_backfills_missing_only(self, compose_file, monkeypatch):
+        compose_file.write_text(self.COMPOSE_TEXT, encoding="utf-8")
+        env = compose_file.parent / ".env"
+        env.write_text("HARBOR_REGISTRY=172.25.1.220\nAPI_TAG=EXISTING\n", encoding="utf-8")
+        self._patch_images(monkeypatch, [
+            DockerImage("172.25.1.220/callfans/api", "20260901102030-abc1234", "sha256:a"),
+            DockerImage("172.25.1.220/callfans/worker", "20260910150000-def5678", "sha256:b"),
+            DockerImage("mysql", "8.0.24", "sha256:m"),  # 非 Harbor 管理
+        ])
+        from callfans.core.updaters.server_updater import backfill_tag_vars
+
+        filled = backfill_tag_vars(make_cfg(compose_file=compose_file))
+        assert filled == ["WORKER_TAG"]
+        values = read_env(env)
+        assert values["WORKER_TAG"] == "20260910150000-def5678"
+        assert values["API_TAG"] == "EXISTING"  # 已有不覆盖
+
+    def test_picks_latest_local_tag(self, compose_file, monkeypatch):
+        compose_file.write_text(self.COMPOSE_TEXT, encoding="utf-8")
+        env = compose_file.parent / ".env"
+        env.write_text("HARBOR_REGISTRY=x\n", encoding="utf-8")
+        self._patch_images(monkeypatch, [
+            DockerImage("172.25.1.220/callfans/api", "20260901102030-abc1234", "sha256:a"),
+            DockerImage("172.25.1.220/callfans/api", "20260912132921-123a066", "sha256:b"),
+        ])
+        from callfans.core.updaters.server_updater import backfill_tag_vars
+
+        backfill_tag_vars(make_cfg(compose_file=compose_file))
+        assert read_env(env)["API_TAG"] == "20260912132921-123a066"  # 本地最高版本
+
+    def test_docker_unavailable_silent(self, compose_file, monkeypatch):
+        import callfans.core.updaters.server_updater as su
+
+        compose_file.write_text(self.COMPOSE_TEXT, encoding="utf-8")
+        env = compose_file.parent / ".env"
+        env.write_text("HARBOR_REGISTRY=x\n", encoding="utf-8")
+        monkeypatch.setattr(su, "docker_images", lambda: (_ for _ in ()).throw(DockerError("down")))
+        from callfans.core.updaters.server_updater import backfill_tag_vars
+
+        assert backfill_tag_vars(make_cfg(compose_file=compose_file)) == []
+        assert "API_TAG" not in read_env(env)

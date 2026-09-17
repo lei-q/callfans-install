@@ -28,7 +28,7 @@
 | Q2 | 前端/SQL 本地版本由应用自维护 `state.json` 记账（详见 §7 与正文说明）；加固方案见 Q14 |
 | Q3 | 类型标识 `com.callfans.type`，取值 **server / frontend / sql**：前端/SQL 在 manifest annotation；server（标准 docker 镜像）在 image Label（经 registry API 读 config，见 Q4）。无 annotation 的制品默认按 server 处理 |
 | Q4 | docker Label 读取走 registry API（manifest → config blob，不下载镜像层） |
-| Q5 | compose 用 `image: <repo>:${VAR}` 形式。**注入机制细化为：更新器把新 tag 持久写入 compose 同目录 .env 的对应变量**（不传临时进程环境变量），原因见 §6.1 |
+| Q5 | compose 用 `image: <repo>:${VAR}` 形式。**注入机制细化为：更新器把新 tag 持久写入 compose 同目录 .env 的对应变量**（不传临时进程环境变量），原因见 §6.1。**2026-09-18 补充：`*_TAG` 一律不手写**——更新中的服务由更新器写入 Harbor 目标 tag；其余服务缺失的 tag 变量在更新前按本地当前运行版本自动回填（backfill），手动 `docker compose up` 任意时刻可插值 |
 | Q13 | `com.callfans.type` 的 Label/annotation 值定为 `server`（docker 镜像）、`frontend`、`sql` |
 | Q14 | 版本记账采用**最小方案：仅 state.json**；不建 MySQL 记账表、不写前端版本标记文件（加固方案留档 §7.3，未采纳） |
 

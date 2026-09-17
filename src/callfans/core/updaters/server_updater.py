@@ -14,11 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ...config import Config
-from ..local import StateStore, harbor_repo_of
+from ..compare import is_version_tag, tag_timestamp
+from ..local import DockerError, StateStore, docker_images, harbor_repo_of
 from ..models import PendingItem
 from .compose_env import (
-    extract_tag_var, find_image_template, has_unresolved_vars, read_env,
-    render_ref, strip_tag, write_env,
+    extract_tag_var, find_image_template, has_unresolved_vars, iter_image_templates,
+    read_env, render_ref, strip_tag, strip_vars, write_env,
 )
 from .docker_cli import DockerCLI, DockerError
 
@@ -31,6 +32,58 @@ _STABLE_POLLS = 3
 
 class UpdateFailure(RuntimeError):
     pass
+
+
+_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def backfill_tag_vars(cfg: Config) -> list[str]:
+    """compose .env 缺失的 *_TAG 变量按本地当前运行版本自动补齐。
+
+    tag 一律不手写（2026-09-18 决策）：更新中的服务由更新器写入 Harbor 目标 tag；
+    未更新/迁移中的服务按本地镜像当前最高版本 tag 回填，保证任意时刻手动
+    `docker compose up` 都能完成插值。docker 不可用时静默跳过（不影响更新流程）。
+    """
+    if not cfg.compose_file:
+        return []
+    compose_file = Path(cfg.compose_file)
+    try:
+        text = compose_file.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    # 本地 repo → 最高版本 tag
+    local_map: dict[str, str] = {}
+    exclude = set(cfg.tag_exclude)
+    try:
+        for img in docker_images():
+            repo = harbor_repo_of(img.repository, cfg.harbor_project)
+            if repo and is_version_tag(img.tag, exclude):
+                cur = local_map.get(repo)
+                if cur is None or (tag_timestamp(img.tag) or _MIN) > (tag_timestamp(cur) or _MIN):
+                    local_map[repo] = img.tag
+    except DockerError:
+        return []
+
+    env_path = compose_file.parent / ".env"
+    env = read_env(env_path)
+    changed: dict[str, str] = {}
+    for template in iter_image_templates(text):
+        var = extract_tag_var(template)
+        if var is None or env.get(var) or var in changed:
+            continue
+        repo = harbor_repo_of(strip_tag(strip_vars(template)), cfg.harbor_project)
+        tag = local_map.get(repo)
+        if tag:
+            changed[var] = tag
+    if changed:
+        try:
+            write_env(env_path, changed)
+        except OSError as e:
+            log.error("tag 变量回填写入失败: %s", e)
+            return []
+        log.info("已按本地当前版本补齐 compose tag 变量: %s", changed)
+    return list(changed)
 
 
 class ServerUpdater:

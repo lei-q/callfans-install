@@ -268,10 +268,12 @@ class MainWindow(QMainWindow):
                 self.log(f"■ {item} → {rec.get('result')}"
                          + (f"（{rec.get('error')}）" if rec.get("error") else ""))
                 self.progress.setValue(self.progress.value() + 1)
-            else:  # stop_old / pull / up / verify / sql_pull / sql_exec / replace …
+            else:  # stop_old / pull / up / verify / sql_pull / sql_exec / tag_backfill …
                 extras = " ".join(str(data[k]) for k in ("tag", "file", "ref") if data.get(k))
                 if data.get("files"):
                     extras += f"（{len(data['files'])} 个文件）"
+                if data.get("vars"):
+                    extras += "← " + ",".join(data["vars"])
                 self.log(f"   · {item}: {stage}{' ' + extras if extras else ''}".rstrip())
         elif event == "update_done":
             self.progress.setValue(self.progress.maximum())
