@@ -1,0 +1,126 @@
+"""前端静态文件更新器（§6.2）：oras 拉取 → 解压到 .new → 原子替换。
+
+- zip-slip 防护：成员路径不得逃逸目标目录
+- 全部条目共享单一顶层目录时自动剥掉（打包习惯差异兜底）
+- `<alias>.bak` 保留上一版，替换成功后删除；失败时正式目录不受影响
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import tempfile
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from ...config import Config
+from ..local import StateStore
+from ..models import PendingItem
+from .artifact_puller import ArtifactPuller, ArtifactPullError, pick_file
+
+log = logging.getLogger(__name__)
+
+
+class FrontendError(RuntimeError):
+    pass
+
+
+def safe_unzip(zip_path: Path, dest: Path) -> None:
+    """解压并防护 zip-slip；若单一顶层目录则剥掉。"""
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+        roots = {n.split("/", 1)[0] for n in names if n and not n.endswith("/")}
+        strip = len(roots) == 1 and all("/" in n for n in names if n and not n.endswith("/"))
+        dest.mkdir(parents=True, exist_ok=True)
+        dest_resolved = dest.resolve()
+        for name in names:
+            member = name.split("/", 1)[1] if (strip and "/" in name) else name
+            if not member or member.endswith("/"):
+                continue
+            target = (dest / member).resolve()
+            if dest_resolved != target and dest_resolved not in target.parents:
+                raise FrontendError(f"zip 含非法路径: {name}")
+        for name in names:
+            member = name.split("/", 1)[1] if (strip and "/" in name) else name
+            if not member or member.endswith("/"):
+                continue
+            target = dest / member
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(name) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
+
+
+class FrontendUpdater:
+    def __init__(self, cfg: Config, state: StateStore | None = None,
+                 puller: ArtifactPuller | None = None, on_event=None):
+        self.cfg = cfg
+        self.state = state
+        self.puller = puller
+        self.on_event = on_event or (lambda *a, **k: None)
+
+    def update(self, item: PendingItem) -> dict:
+        alias = item.alias or item.name.split("/", 1)[1]
+        record = {
+            "name": item.name, "type": "frontend", "old": item.old, "new": item.new,
+            "result": "failed", "error": None, "alias": alias,
+        }
+        if not self.cfg.frontend_output_dir:
+            record["error"] = "FRONTEND_OUTPUT_DIR 未配置"
+            return record
+        base = Path(self.cfg.frontend_output_dir)
+        target = base / alias
+        new_dir = base / f"{alias}.new"
+        bak_dir = base / f"{alias}.bak"
+        puller = self.puller or ArtifactPuller(
+            self.cfg.harbor_api_url, self.cfg.harbor_username, self.cfg.harbor_password
+        )
+        tmpdir = Path(tempfile.mkdtemp(prefix="callfans-frontend-"))
+        try:
+            self.on_event("update_progress", {"item": item.name, "stage": "pull"})
+            files = puller.pull(item.name, item.new, tmpdir)
+            zip_path = pick_file(files, ".zip")
+
+            self.on_event("update_progress", {"item": item.name, "stage": "unzip"})
+            if new_dir.exists():
+                shutil.rmtree(new_dir)
+            safe_unzip(zip_path, new_dir)
+            if not any(new_dir.iterdir()):
+                raise FrontendError("解压结果为空目录")
+
+            self.on_event("update_progress", {"item": item.name, "stage": "replace"})
+            _remove(bak_dir)
+            if target.exists():
+                os.rename(target, bak_dir)
+            try:
+                os.rename(new_dir, target)
+            except OSError:
+                if not target.exists() and bak_dir.exists():  # 还原
+                    os.rename(bak_dir, target)
+                raise
+            _remove(bak_dir)  # 成功后清理上一版
+
+            if self.state is not None:
+                data = self.state.get("frontend") or {}
+                data[item.name] = {
+                    "tag": item.new,
+                    "digest": item.digest_new,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                self.state.set("frontend", data)
+                self.state.save()
+            record.update(result="success")
+            return record
+        except Exception as e:
+            record["error"] = f"{type(e).__name__}: {e}"
+            return record
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _remove(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    elif path.exists():
+        path.unlink(missing_ok=True)

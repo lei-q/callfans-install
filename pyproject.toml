@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "callfans"
+version = "0.1.0"
+description = "callfans 镜像更新器：Harbor 版本检查与更新服务（服务 + CLI + Windows 托盘 UI）"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "typer>=0.12",
+    "httpx>=0.27",
+    "platformdirs>=4.0",
+    "python-dotenv>=1.0",
+    "oras>=0.1.30",
+    "pymysql>=1.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+gui = ["PySide6>=6.6"]
+
+[project.scripts]
+callfans = "callfans.cli:main"
+callfans-service = "callfans.service.app:main"
+callfans-ui = "callfans.ui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/callfans"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
