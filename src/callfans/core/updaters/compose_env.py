@@ -58,6 +58,11 @@ def strip_vars(template: str) -> str:
     return _VAR_RE.sub("", template)
 
 
+def vars_in(template: str) -> list[str]:
+    """模板中引用的全部变量（如 HARBOR_REGISTRY、API_TAG）。"""
+    return _VAR_RE.findall(template)
+
+
 def render_ref(template: str, tag: str, var: str | None = None, env: dict | None = None) -> str:
     """把 tag 变量替换为具体 tag；其余变量（如 ${HARBOR_REGISTRY}）用 env 值解析。
 

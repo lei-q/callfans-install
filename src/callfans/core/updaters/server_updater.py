@@ -132,8 +132,10 @@ class ServerUpdater:
         # 让 .env 成为 tag 唯一事实源（compose 调用时剔除 shell 环境变量覆盖）
         self.docker.env_exclusions.add(var)
 
-        old_ctn = self._find_container(compose_file, service)
-        old_renamed: str | None = None
+        old_ctn = self._find_container(
+            compose_file, service,
+            container_name=(cfg_json.get("services", {}).get(service, {}) or {}).get("container_name"),
+        )
         new_ctn: str | None = None
         env_written = False
         old_image_id: str | None = None
@@ -144,10 +146,9 @@ class ServerUpdater:
                 if info.get("State", {}).get("Running"):
                     self._emit(item, "stop_old", container=old_ctn)
                     self.docker.stop(old_ctn, self.cfg.docker_stop_timeout)
-                old_renamed = f"{old_ctn}{_OLD_SUFFIX}"
-                if self.docker.container_exists(old_renamed):
-                    self.docker.rm(old_renamed, force=True)  # 清理上次中断残留
-                self.docker.rename(old_ctn, old_renamed)
+                # 已存在的容器先停再删（2026-09-18 决策：适配 container_name 固定名，
+                # 旧容器可能属于其他 compose 项目，compose ps 不一定能找到）
+                self.docker.rm(old_ctn)
 
             new_ref = render_ref(template, item.new, var, env_values)
             if has_unresolved_vars(new_ref):
@@ -161,7 +162,7 @@ class ServerUpdater:
             self._emit(item, "up", service=service)
             self.docker.compose_up(compose_file, service)
 
-            new_ctn = self._find_container(compose_file, service, exclude={old_renamed} if old_renamed else None)
+            new_ctn = self._find_container(compose_file, service)
             if new_ctn is None:
                 raise UpdateFailure("compose up 后未找到新容器")
             cinfo = self.docker.inspect_container(new_ctn)
@@ -173,11 +174,6 @@ class ServerUpdater:
 
             # 成功清理；清理失败只记 warning，不影响结果
             warns: list[str] = []
-            if old_renamed:
-                try:
-                    self.docker.rm(old_renamed)
-                except DockerError as e:
-                    warns.append(f"旧容器清理失败: {e}")
             if old_image_id:
                 try:
                     if not self.docker.containers_using_image(old_image_id):
@@ -190,7 +186,7 @@ class ServerUpdater:
         except Exception as e:
             reason = self._failure_reason(new_ctn, e)
             log.error("%s 更新失败: %s", item.name, reason)
-            rb_error = self._rollback(env_path, var, old_tag, env_written, new_ctn, old_renamed, old_ctn)
+            rb_error = self._rollback(env_path, var, old_tag, env_written, new_ctn, compose_file, service)
             record.update(
                 result="rolled_back",
                 error=reason + (f"；回滚失败: {rb_error}" if rb_error else "；已回滚"),
@@ -209,22 +205,25 @@ class ServerUpdater:
                 return svc
         return None
 
-    def _find_container(self, compose_file: Path, service: str, exclude: set | None = None) -> str | None:
+    def _find_container(self, compose_file: Path, service: str, container_name: str | None = None) -> str | None:
+        """定位服务当前容器：先按 compose 项目查，再按固定 container_name 直查兜底。
+
+        旧容器可能由别的 compose 项目 / 旧版 docker-compose 创建（本项目 ps 找不到），
+        compose up 会因 container_name 冲突失败，必须先停删。
+        """
         try:
             entries = self.docker.compose_ps(compose_file)
         except DockerError:
-            return None
+            entries = []
         for e in entries:
             name = e.get("Name") or e.get("Names") or e.get("ID")
-            if not name:
-                continue
-            if name.endswith(_OLD_SUFFIX):
-                continue
-            if exclude and name in exclude:
+            if not name or name.endswith(_OLD_SUFFIX):
                 continue
             svc = e.get("Service") or (e.get("Labels") or {}).get("com.docker.compose.service")
             if svc == service:
                 return name
+        if container_name and self.docker.container_exists(container_name):
+            return container_name
         return None
 
     def _verify(self, new_ctn: str) -> None:
@@ -265,7 +264,11 @@ class ServerUpdater:
         return reason
 
     def _rollback(self, env_path: Path, var: str, old_tag: str | None, env_written: bool,
-                  new_ctn: str | None, old_renamed: str | None, old_ctn: str | None) -> str | None:
+                  new_ctn: str | None, compose_file: Path, service: str) -> str | None:
+        """回滚：写回旧 tag → 移除新容器 → 用本地旧镜像按旧版本重建旧容器。
+
+        旧镜像仅在更新成功后才清理，故失败时必然还在本地可重建。
+        """
         errors: list[str] = []
         if env_written:
             try:
@@ -278,12 +281,11 @@ class ServerUpdater:
                     self.docker.rm(new_ctn, force=True)
             except DockerError as e:
                 errors.append(f"移除新容器失败: {e}")
-        if old_renamed and old_ctn:
+        if old_tag:
             try:
-                self.docker.rename(old_renamed, old_ctn)
-                self.docker.start(old_ctn)
+                self.docker.compose_up(compose_file, service)  # 旧镜像重建旧容器
             except DockerError as e:
-                errors.append(f"恢复旧容器失败: {e}")
+                errors.append(f"旧容器重建失败: {e}")
         return "; ".join(errors) or None
 
     def _record_state(self, repo: str, tag: str, image_id: str | None) -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ...config import Config
 from ..models import TYPE_FRONTEND, TYPE_SERVER, TYPE_SQL, UpdatePlan
-from .compose_env import extract_tag_var, find_image_template, iter_image_templates
+from .compose_env import extract_tag_var, find_image_template, iter_image_templates, read_env, vars_in
 from .docker_cli import DockerCLI
 
 _MIN_FREE_BYTES = 100 * 1024 * 1024  # 100MB
@@ -40,16 +40,22 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None,
                     d.version_ok()
                     _, var_warnings = d.compose_config_checked(compose_file)
                     text = compose_file.read_text(encoding="utf-8")
+                    templates = iter_image_templates(text)
                     # 所有 tag 变量放行（更新器写入目标 tag / backfill 回填当前版本），
                     # 无论该服务本次是否有待更新；非 tag 变量缺失仍拦截
-                    tag_vars = {
-                        v for v in (extract_tag_var(t) for t in iter_image_templates(text)) if v
+                    tag_vars = {v for v in (extract_tag_var(t) for t in templates) if v}
+                    # 确定性检查：镜像行引用的非 tag 变量必须在 compose .env 中有值
+                    #（不依赖 docker 告警文本格式——不同 compose 版本输出有差异）
+                    env_values = read_env(compose_file.parent / ".env")
+                    required = {
+                        v for t in templates for v in vars_in(t)
+                        if v != extract_tag_var(t) and not env_values.get(v)
                     }
                     for p in [x for x in plan.pending if x.type == TYPE_SERVER]:
                         template = find_image_template(text, p.name, cfg.harbor_project)
                         if template is None or extract_tag_var(template) is None:
                             errors.append(f"{p.name}: compose image 未使用 ${{VAR}} 形式（Q5）")
-                    missing = [v for v in var_warnings if v not in tag_vars]
+                    missing = sorted((set(var_warnings) | required) - tag_vars)
                     if missing:
                         errors.append(
                             f"compose 变量未定义: {', '.join(missing)}"

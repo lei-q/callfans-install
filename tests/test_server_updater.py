@@ -20,13 +20,14 @@ class FakeDocker:
     def __init__(self, compose_file, templates: dict[str, str], fail_up=False, health="healthy"):
         self.compose_file = compose_file
         self.templates = templates
-        self.fail_up = fail_up
+        self.fail_up = fail_up  # 仅让首次 up（新镜像）失败；回滚重建的旧镜像正常启动
         self.health = health
         self.containers: dict[str, dict] = {}
         self.images: dict[str, str] = {}
         self.env_exclusions: set[str] = set()
         self.actions: list[str] = []
         self._n = 0
+        self._ups = 0
 
     def _rendered(self, service):
         from callfans.core.updaters.compose_env import extract_tag_var
@@ -46,14 +47,16 @@ class FakeDocker:
 
     def compose_up(self, f, service):
         self.actions.append(f"up:{service}")
+        self._ups += 1
         ref = self._rendered(service)
         image_id = self.images.get(ref)
         if image_id is None:
             raise DockerError(f"pull required for {ref}")
         name = f"proj-{service}-1"
         self.containers.pop(name, None)  # compose 用同名重建
+        failing = self.fail_up and self._ups == 1  # 只有新镜像这次失败
         self.containers[name] = {
-            "service": service, "image_id": image_id, "running": not self.fail_up,
+            "service": service, "image_id": image_id, "running": not failing,
         }
 
     def inspect_container(self, name):
@@ -138,16 +141,16 @@ def test_success_flow(compose_file, tmp_path):
     assert record["result"] == "success", record["error"]
     env = read_env(compose_file.parent / ".env")
     assert env["API_TAG"] == NEW
-    # 旧容器清理、新容器在跑
-    assert "proj-api-1-callfans-old" not in fake.containers
+    # 新容器在跑（旧容器已停+删，无改名）
     assert fake.containers["proj-api-1"]["running"] is True
     # 旧镜像删除（无引用）、新镜像存在
     assert old_image_id not in fake.images.values()
     assert render_ref(TPL, NEW) in fake.images
-    # 关键动作齐全
+    # 关键动作：先停再删旧容器，再 pull 新镜像
     joined = " ".join(fake.actions)
     assert "stop:proj-api-1" in joined
-    assert "rename:proj-api-1->proj-api-1-callfans-old" in joined
+    assert "rm:proj-api-1" in joined
+    assert "rename:" not in joined
     assert f"pull:{render_ref(TPL, NEW)}" in joined
     # state 记账
     assert state.get("server")["callfans/api"]["tag"] == NEW
@@ -155,7 +158,7 @@ def test_success_flow(compose_file, tmp_path):
 
 def test_failure_rolls_back(compose_file, tmp_path):
     fake = FakeDocker(compose_file, {"api": TPL}, fail_up=True)  # 新容器启动即退出
-    seed_running_stack(fake)
+    old_image_id = seed_running_stack(fake)
     cfg = make_cfg(compose_file=compose_file, health_wait_seconds=2, docker_stop_timeout=1)
     state = StateStore(tmp_path / "state.json")
 
@@ -166,14 +169,13 @@ def test_failure_rolls_back(compose_file, tmp_path):
     assert "boom" in record["error"]  # 带回日志尾部
     # .env 写回旧 tag
     assert read_env(compose_file.parent / ".env")["API_TAG"] == OLD
-    # 旧容器恢复原名并重启
+    # 旧容器按旧镜像重建并运行
     assert fake.containers["proj-api-1"]["running"] is True
-    assert "proj-api-1-callfans-old" not in fake.containers
-    assert "start:proj-api-1" in " ".join(fake.actions)
-    # 新容器已移除
-    assert len([n for n in fake.containers if n != "proj-api-1"]) == 0
+    assert fake.containers["proj-api-1"]["image_id"] == old_image_id
     # 失败不记账
     assert state.get("server") is None
+    # compose up 执行两次：一次新版本（失败）、一次回滚重建
+    assert " ".join(fake.actions).count("up:api") == 2
 
 
 def test_first_deploy_no_old_container(compose_file, tmp_path):
@@ -288,3 +290,14 @@ class TestBackfillTagVars:
 
         assert backfill_tag_vars(make_cfg(compose_file=compose_file)) == []
         assert "API_TAG" not in read_env(env)
+
+
+def test_find_container_falls_back_to_container_name(compose_file):
+    """旧容器不属于本项目（compose ps 找不到）时，按 container_name 直查兜底。"""
+    fake = FakeDocker(compose_file, {"api": TPL})
+    fake.containers["callfans-admin"] = {"service": "别的项目", "image_id": "img-x", "running": True}
+    from callfans.core.updaters.server_updater import ServerUpdater as SU
+
+    updater = SU(make_cfg(compose_file=compose_file), None, fake)
+    found = updater._find_container(compose_file, "api", container_name="callfans-admin")
+    assert found == "callfans-admin"

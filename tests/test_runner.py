@@ -145,6 +145,28 @@ def test_preflight_allows_only_tag_var_missing(tmp_path):
     assert report["summary"]["success"] == 1
 
 
+def test_preflight_deterministic_env_check(tmp_path):
+    """不依赖 docker 告警文本：.env 缺 HARBOR_REGISTRY 直接按内容判定（v0.1.8 回归）。"""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n", encoding="utf-8"
+    )
+    env = tmp_path / ".env"
+    env.write_text("API_TAG=T1\n", encoding="utf-8")  # 缺 HARBOR_REGISTRY
+    docker = MissingVarDocker([])  # docker 侧无告警（模拟格式不匹配/未输出）
+    stubs = {"server": StubUpdater()}
+    runner = UpdateRunner(make_cfg(compose_file=compose), docker=docker,
+                          updaters=stubs, history_path=tmp_path / "h.jsonl")
+    report = runner.run(plan_of(make_item("server", "callfans/api")))
+    assert "HARBOR_REGISTRY" in report["preflight_error"]
+    assert "API_TAG" not in report["preflight_error"]
+    # 补上后通过
+    env.write_text("API_TAG=T1\nHARBOR_REGISTRY=172.25.1.220\n", encoding="utf-8")
+    runner2 = UpdateRunner(make_cfg(compose_file=compose), docker=docker,
+                           updaters=stubs, history_path=tmp_path / "h.jsonl")
+    assert runner2.run(plan_of(make_item("server", "callfans/api")))["preflight_error"] is None
+
+
 def test_updater_exception_isolated(tmp_path):
     class Exploding:
         def update(self, item):
