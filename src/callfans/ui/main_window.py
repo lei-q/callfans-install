@@ -28,10 +28,12 @@ class Worker(QObject):
 
     用 daemon 线程而非 QThread：退出程序时线程随进程静默结束，
     不会出现 "QThread: Destroyed while thread is still running"。
+    finished 在 done/failed 之后投递，用于调用方回收 Worker。
     """
 
     done = Signal(object)
     failed = Signal(str)
+    finished = Signal()
 
     def __init__(self, fn, parent=None):
         super().__init__(parent)
@@ -45,6 +47,8 @@ class Worker(QObject):
             self.done.emit(self._fn())
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"{type(e).__name__}: {e}")
+        finally:
+            self.finished.emit()
 
 
 class MainWindow(QMainWindow):

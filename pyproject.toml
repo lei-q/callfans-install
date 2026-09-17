@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "callfans"
-version = "0.1.2"
+version = "0.1.3"
 description = "callfans 镜像更新器：Harbor 版本检查与更新服务（服务 + CLI + Windows 托盘 UI）"
 requires-python = ">=3.11"
 dependencies = [

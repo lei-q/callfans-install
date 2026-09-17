@@ -72,6 +72,49 @@ def test_tray_icon_pixmap(qapp):
     assert not icon.pixmap(64, 64).isNull()
 
 
+def _pump(qapp, cond, timeout_s=5.0):
+    """泵事件循环直到条件满足（等待 daemon 线程 + 队列投递）。"""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while not cond():
+        assert time.monotonic() < deadline, "等待事件超时"
+        qapp.processEvents()
+        time.sleep(0.01)
+
+
+def test_worker_lifecycle_success(qapp):
+    """回归：v0.1.2 Worker 改为 QObject 后 finished 缺失导致启动即崩。"""
+    import time
+
+    from callfans.ui.main_window import MainWindow
+
+    w = MainWindow(poll_enabled=False)
+    results: list = []
+    w._run(lambda: ({"busy": False, "updating": False, "last_check": None},
+                    {"checked_at": None, "pending": []}), results.append)
+    _pump(qapp, lambda: len(results) == 1)
+    assert results[0][0]["busy"] is False
+    # finished 信号回收 Worker
+    _pump(qapp, lambda: w._workers == [])
+    assert w._workers == []
+
+
+def test_worker_lifecycle_failure(qapp):
+    from callfans.ui.main_window import MainWindow
+
+    w = MainWindow(poll_enabled=False)
+
+    def boom():
+        raise RuntimeError("网络错误")
+
+    got: list = []
+    w._run(boom, lambda r: got.append(("done", r)), lambda e: got.append(("err", e)))
+    _pump(qapp, lambda: len(got) == 1)
+    assert got[0][0] == "err" and "RuntimeError" in got[0][1]
+    _pump(qapp, lambda: w._workers == [])
+
+
 def test_quit_button_exits_when_idle(qapp, monkeypatch):
     import callfans.ui.main_window as mw
 
