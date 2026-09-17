@@ -70,3 +70,51 @@ def test_tray_icon_pixmap(qapp):
 
     icon = _make_icon()
     assert not icon.pixmap(64, 64).isNull()
+
+
+def test_quit_button_exits_when_idle(qapp, monkeypatch):
+    import callfans.ui.main_window as mw
+
+    w = mw.MainWindow(poll_enabled=False)
+    assert not w._busy
+    quit_calls: list[int] = []
+
+    class FakeQApp:
+        @staticmethod
+        def quit():
+            quit_calls.append(1)
+
+    monkeypatch.setattr(mw, "QApplication", FakeQApp)
+    w.btn_quit.click()
+    assert quit_calls == [1]
+
+
+def test_quit_confirms_when_busy(qapp, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    import callfans.ui.main_window as mw
+
+    w = mw.MainWindow(poll_enabled=False)
+    w._busy = True
+    quit_calls: list[int] = []
+
+    class FakeQApp:
+        @staticmethod
+        def quit():
+            quit_calls.append(1)
+
+    monkeypatch.setattr(mw, "QApplication", FakeQApp)
+    # 用户取消 → 不退出
+    monkeypatch.setattr(
+        mw.QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.No),
+    )
+    w.request_quit()
+    assert quit_calls == []
+    # 用户确认 → 退出
+    monkeypatch.setattr(
+        mw.QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+    )
+    w.request_quit()
+    assert quit_calls == [1]

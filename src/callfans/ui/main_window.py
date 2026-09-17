@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+import threading
+
+from PySide6.QtCore import Qt, QObject, QTimer, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
-    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
+    QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from . import client
@@ -19,7 +23,13 @@ from .client import ServiceUnavailable
 _POLL_SECONDS = 5
 
 
-class Worker(QThread):
+class Worker(QObject):
+    """daemon 线程执行阻塞 IPC，结果经信号（自动队列投递）回主线程。
+
+    用 daemon 线程而非 QThread：退出程序时线程随进程静默结束，
+    不会出现 "QThread: Destroyed while thread is still running"。
+    """
+
     done = Signal(object)
     failed = Signal(str)
 
@@ -27,7 +37,10 @@ class Worker(QThread):
         super().__init__(parent)
         self._fn = fn
 
-    def run(self):  # 在工作线程执行
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
         try:
             self.done.emit(self._fn())
         except Exception as e:  # noqa: BLE001
@@ -42,6 +55,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("callfans 更新器")
         self.resize(760, 520)
         self._workers: list[Worker] = []
+        self._busy = False  # 检查/更新进行中（退出确认用）
         self._last_seen_check: str | None = None  # 用于识别"新一轮检查结果"
         self._first_refresh = True
 
@@ -51,13 +65,18 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         self.btn_check = QPushButton("检查更新")
         self.btn_update = QPushButton("立即更新")
+        self.btn_quit = QPushButton("退出")
+        self.btn_quit.setToolTip("退出程序（关闭窗口只会最小化到托盘）")
         self.btn_check.clicked.connect(self.on_check_clicked)
         self.btn_update.clicked.connect(self.on_update_clicked)
+        self.btn_quit.clicked.connect(self.request_quit)
+        QShortcut(QKeySequence.Quit, self, self.request_quit)  # Ctrl+Q / Ctrl+Cmd+Q
         self.label_status = QLabel("初始化…")
         top.addWidget(self.btn_check)
         top.addWidget(self.btn_update)
         top.addStretch(1)
         top.addWidget(self.label_status)
+        top.addWidget(self.btn_quit)
         layout.addLayout(top)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
@@ -157,23 +176,27 @@ class MainWindow(QMainWindow):
     # ---------- 动作 ----------
 
     def on_check_clicked(self) -> None:
+        self._busy = True
         self.btn_check.setEnabled(False)
         self.btn_update.setEnabled(False)
         self.log("开始检查…")
         self._run(client.check, self._check_done, self._action_failed)
 
     def _check_done(self, plan: dict) -> None:
+        self._busy = False
         count = len(plan.get("pending") or [])
         self.log(f"检查完成: {count} 项待更新")
         self.refresh()
 
     def on_update_clicked(self) -> None:
+        self._busy = True
         self.btn_check.setEnabled(False)
         self.btn_update.setEnabled(False)
         self.log("开始更新（SQL → server → 前端）…")
         self._run(client.update, self._update_done, self._action_failed)
 
     def _update_done(self, report: dict) -> None:
+        self._busy = False
         if report.get("preflight_error"):
             self.log(f"前置检查未通过，未执行更新: {report['preflight_error']}")
             QMessageBox.warning(self, "更新", f"前置检查未通过，未执行任何更新:\n{report['preflight_error']}")
@@ -189,8 +212,24 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def _action_failed(self, error: str) -> None:
+        self._busy = False
         self.log(f"操作失败: {error}")
         self.refresh()
+
+    # ---------- 退出 ----------
+
+    def request_quit(self) -> None:
+        """统一退出入口（窗口按钮 / Ctrl+Q / 托盘菜单）。"""
+        if self._busy:
+            ret = QMessageBox.question(
+                self, "退出", "检查/更新正在进行，退出将中断当前操作。\n确定退出吗？"
+            )
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            timer.stop()
+        QApplication.quit()
 
     # ---------- 工具 ----------
 

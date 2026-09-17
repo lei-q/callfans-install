@@ -40,7 +40,7 @@ class TrayController:
         act_show.triggered.connect(self._show_window)
         act_check.triggered.connect(window.on_check_clicked)
         act_update.triggered.connect(window.on_update_clicked)
-        act_quit.triggered.connect(self._quit)
+        act_quit.triggered.connect(window.request_quit)
         menu.addAction(act_show)
         menu.addSeparator()
         menu.addAction(act_check)
@@ -68,8 +68,3 @@ class TrayController:
             QSystemTrayIcon.MessageIcon.Information,
         )
         self._show_window()
-
-    def _quit(self) -> None:
-        from PySide6.QtWidgets import QApplication
-
-        QApplication.quit()
