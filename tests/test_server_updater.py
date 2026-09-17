@@ -35,8 +35,8 @@ class FakeDocker:
         var = extract_tag_var(tpl)
         if var is None:
             return tpl
-        tag = read_env(self.compose_file.parent / ".env").get(var, "latest")
-        return render_ref(tpl, tag)
+        env = read_env(self.compose_file.parent / ".env")
+        return render_ref(tpl, env.get(var, "latest"), env=env)
 
     def compose_config(self, f):
         return {"services": {svc: {"image": self._rendered(svc)} for svc in self.templates}}
@@ -196,3 +196,37 @@ def test_compose_image_without_var_rejected(compose_file, tmp_path):
     record = ServerUpdater(cfg, None, fake).update(make_item())
     assert record["result"] == "failed"
     assert "${VAR}" in record["error"]
+
+
+def test_registry_var_template(compose_file, tmp_path):
+    """镜像地址含 ${HARBOR_REGISTRY} 变量：pull 引用须用 .env 值解析，不得残留变量。"""
+    tpl = "${HARBOR_REGISTRY}/callfans/api:${API_TAG}"
+    compose_file.write_text(f"services:\n  api:\n    image: {tpl}\n", encoding="utf-8")
+    (compose_file.parent / ".env").write_text(
+        f"HARBOR_REGISTRY=harbor.example.com\nAPI_TAG={OLD}\n", encoding="utf-8"
+    )
+    fake = FakeDocker(compose_file, {"api": tpl})
+    old_ref = f"harbor.example.com/callfans/api:{OLD}"
+    fake.pull(old_ref)
+    fake.containers["proj-api-1"] = {"service": "api", "image_id": fake.images[old_ref], "running": True}
+    cfg = make_cfg(compose_file=compose_file, health_wait_seconds=2)
+    record = ServerUpdater(cfg, StateStore(tmp_path / "state.json"), fake).update(make_item())
+    assert record["result"] == "success", record["error"]
+    joined = " ".join(fake.actions)
+    assert f"pull:harbor.example.com/callfans/api:{NEW}" in joined  # 变量已解析
+    assert "${" not in joined
+    assert read_env(compose_file.parent / ".env")["API_TAG"] == NEW
+    # 其他变量原样保留
+    assert read_env(compose_file.parent / ".env")["HARBOR_REGISTRY"] == "harbor.example.com"
+
+
+def test_registry_var_undefined_rejected(compose_file, tmp_path):
+    """HARBOR_REGISTRY 未在 .env 定义 → 明确报错，不动容器。"""
+    tpl = "${HARBOR_REGISTRY}/callfans/api:${API_TAG}"
+    compose_file.write_text(f"services:\n  api:\n    image: {tpl}\n", encoding="utf-8")
+    (compose_file.parent / ".env").write_text(f"API_TAG={OLD}\n", encoding="utf-8")
+    fake = FakeDocker(compose_file, {"api": tpl})
+    cfg = make_cfg(compose_file=compose_file)
+    record = ServerUpdater(cfg, None, fake).update(make_item())
+    assert record["result"] == "rolled_back"
+    assert "未定义变量" in record["error"]

@@ -56,6 +56,21 @@ class TestTemplate:
         assert render_ref("harbor.example.com/callfans/api:$API_TAG", "T1") == \
             "harbor.example.com/callfans/api:T1"
 
+    def test_render_resolves_other_vars_from_env(self):
+        ref = render_ref(
+            "${HARBOR_REGISTRY}/callfans/api:${API_TAG}", "T1", "API_TAG",
+            env={"HARBOR_REGISTRY": "172.25.1.220"},
+        )
+        assert ref == "172.25.1.220/callfans/api:T1"
+
+    def test_render_leaves_unknown_var(self):
+        from callfans.core.updaters.compose_env import has_unresolved_vars
+
+        ref = render_ref("${HARBOR_REGISTRY}/callfans/api:${API_TAG}", "T1", "API_TAG", env={})
+        assert ref == "${HARBOR_REGISTRY}/callfans/api:T1"
+        assert has_unresolved_vars(ref)
+        assert not has_unresolved_vars("host/callfans/api:T1")
+
 
 class TestEnvFile:
     def test_read(self, tmp_path):

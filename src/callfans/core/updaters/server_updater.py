@@ -16,7 +16,10 @@ from pathlib import Path
 from ...config import Config
 from ..local import StateStore, harbor_repo_of
 from ..models import PendingItem
-from .compose_env import extract_tag_var, find_image_template, read_env, render_ref, strip_tag, write_env
+from .compose_env import (
+    extract_tag_var, find_image_template, has_unresolved_vars, read_env,
+    render_ref, strip_tag, write_env,
+)
 from .docker_cli import DockerCLI, DockerError
 
 log = logging.getLogger(__name__)
@@ -61,7 +64,8 @@ class ServerUpdater:
             record["error"] = f"{item.name} 的 image 未使用 ${{VAR}} 形式（Q5）: {template}"
             return record
         env_path = compose_file.parent / ".env"
-        old_tag = read_env(env_path).get(var)
+        env_values = read_env(env_path)
+        old_tag = env_values.get(var)
 
         try:
             cfg_json = self.docker.compose_config(compose_file)
@@ -92,7 +96,9 @@ class ServerUpdater:
                     self.docker.rm(old_renamed, force=True)  # 清理上次中断残留
                 self.docker.rename(old_ctn, old_renamed)
 
-            new_ref = render_ref(template, item.new, var)
+            new_ref = render_ref(template, item.new, var, env_values)
+            if has_unresolved_vars(new_ref):
+                raise UpdateFailure(f"镜像引用存在未定义变量: {new_ref}（检查 compose 同目录 .env）")
             self._emit(item, "pull", ref=new_ref)
             self.docker.pull(new_ref)
             new_image_id = self.docker.inspect_image(new_ref).get("Id")

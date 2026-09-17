@@ -48,12 +48,26 @@ def extract_tag_var(template: str) -> str | None:
     return vars_[-1] if vars_ else None
 
 
-def render_ref(template: str, tag: str, var: str | None = None) -> str:
-    """把 tag 变量替换为具体 tag（只替换该变量，不动其他变量）。"""
+def render_ref(template: str, tag: str, var: str | None = None, env: dict | None = None) -> str:
+    """把 tag 变量替换为具体 tag；其余变量（如 ${HARBOR_REGISTRY}）用 env 值解析。
+
+    env 中无值的变量保留原样（调用方需检测残留并报错）。
+    """
     var = var or extract_tag_var(template)
-    if var is None:
-        return template
-    return re.sub(rf"\$\{{?{var}\}}?", tag, template)
+    if var is not None:
+        template = re.sub(rf"\$\{{?{var}\}}?", tag, template)
+    if env:
+
+        def _sub(m):
+            name = m.group(1)
+            return env[name] if env.get(name) else m.group(0)
+
+        template = re.sub(r"\$\{?(\w+)\}?", _sub, template)
+    return template
+
+
+def has_unresolved_vars(ref: str) -> bool:
+    return bool(re.search(r"\$\{?\w+\}?", ref))
 
 
 def read_env(path: Path) -> dict[str, str]:
