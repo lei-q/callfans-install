@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from callfans.paths import runtime_candidates, runtime_file
+from callfans.paths import SYSTEM_RUNTIME_FILE, runtime_candidates, runtime_file
 from callfans.service.install import render_ui_autostart, render_user_unit
 
 
@@ -39,10 +39,10 @@ class TestRuntimePaths:
         monkeypatch.setenv("CALLFANS_RUNTIME_FILE", str(override))
         cands = runtime_candidates()
         assert cands[0] == override
-        assert str(cands[-1]).endswith("/run/callfans/runtime.json")  # 系统级兜底
+        assert cands[-1] == SYSTEM_RUNTIME_FILE  # 系统级兜底（路径对象比较，跨平台）
 
     def test_candidates_default_without_env(self, monkeypatch):
         monkeypatch.delenv("CALLFANS_RUNTIME_FILE", raising=False)
         cands = runtime_candidates()
         assert len(cands) == 2
-        assert str(cands[-1]).endswith("/run/callfans/runtime.json")
+        assert cands[-1] == SYSTEM_RUNTIME_FILE
