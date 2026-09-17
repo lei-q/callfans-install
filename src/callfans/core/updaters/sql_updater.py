@@ -1,7 +1,8 @@
-"""SQL 执行器（§6.3）：oras 拉取 → 语句切分 → pymysql 单事务执行 → state 记账。
+"""SQL 执行器（§6.3）：oras 拉取 → 归档解包（zip/tar.gz/gz，2026-09-18 实测为打包制品）
+→ 按 py 序执行全部 .sql（每文件独立事务）→ state 记账。
 
 - 积压多版本按 push_time 升序逐个执行（runner 保证传入顺序，本执行器按列表顺序）
-- 整文件单事务；失败整体回滚；含 DDL 时 DDL 隐式提交无法回滚 → 记录断点人工介入（Q10）
+- 单文件单事务；失败回滚当前文件；含 DDL 时 DDL 隐式提交无法回滚 → 记录断点人工介入（Q10）
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ from pathlib import Path
 from ...config import Config
 from ..local import StateStore
 from ..models import PendingItem
-from .artifact_puller import ArtifactPuller, ArtifactPullError, pick_file
+from .archive import extract_archive, is_archive
+from .artifact_puller import ArtifactPuller
 
 log = logging.getLogger(__name__)
 
@@ -133,25 +135,28 @@ class SqlUpdater:
             tmpdir = Path(tempfile.mkdtemp(prefix="callfans-sql-"))
             try:
                 files = puller.pull(item.name, tag, tmpdir)
-                sql_file = pick_file(files, ".sql")
-                statements = split_sql(sql_file.read_text(encoding="utf-8"))
-                if not statements:
-                    raise SqlError(f"{tag}: SQL 文件为空")
-                self.on_event("update_progress", {"item": item.name, "stage": "sql_exec", "tag": tag,
-                                                  "statements": len(statements)})
+                sql_files = self._collect_sql_files(files, tmpdir / "extracted")
+                self.on_event("update_progress", {
+                    "item": item.name, "stage": "sql_exec", "tag": tag,
+                    "files": [f.name for f in sql_files],
+                })
                 conn = connect()
                 try:
-                    with conn.cursor() as cursor:
-                        for idx, stmt in enumerate(statements, 1):
-                            try:
-                                cursor.execute(stmt)
-                            except Exception as e:
-                                conn.rollback()
-                                raise SqlError(
-                                    f"{tag}: 第 {idx}/{len(statements)} 条语句失败: {e}"
-                                    "（若含 DDL，已执行部分无法回滚，请人工确认）"
-                                ) from e
-                    conn.commit()
+                    for sql_file in sql_files:
+                        statements = split_sql(sql_file.read_text(encoding="utf-8"))
+                        if not statements:
+                            raise SqlError(f"{tag}/{sql_file.name}: SQL 文件为空")
+                        with conn.cursor() as cursor:
+                            for idx, stmt in enumerate(statements, 1):
+                                try:
+                                    cursor.execute(stmt)
+                                except Exception as e:
+                                    conn.rollback()
+                                    raise SqlError(
+                                        f"{tag}/{sql_file.name}: 第 {idx}/{len(statements)} 条语句失败: {e}"
+                                        "（若含 DDL，已执行部分无法回滚，请人工确认）"
+                                    ) from e
+                        conn.commit()
                 finally:
                     conn.close()
                 executed.append(tag)
@@ -164,6 +169,27 @@ class SqlUpdater:
                 shutil.rmtree(tmpdir, ignore_errors=True)
         record.update(result="success", executed=executed)
         return record
+
+    @staticmethod
+    def _collect_sql_files(files: list[Path], workdir: Path) -> list[Path]:
+        """裸 .sql 直接用；归档（zip/tar.gz/gz）解包后取全部 .sql，按路径升序依次执行。"""
+        archives = [f for f in files if is_archive(f)]
+        if archives:
+            extract_archive(archives[0], workdir)
+            sqls = sorted(
+                workdir.rglob("*.sql"),
+                key=lambda p: str(p.relative_to(workdir)).lower(),
+            )
+            if not sqls:
+                raise SqlError(f"压缩包内未找到 .sql 文件: {[f.name for f in files]}")
+            return sqls
+        plain = sorted((f for f in files if f.suffix.lower() == ".sql"),
+                       key=lambda p: p.name.lower())
+        if plain:
+            return plain
+        if len(files) == 1:
+            return [files[0]]  # 无后缀单文件兜底
+        raise SqlError(f"制品中未找到可执行的 .sql: {[f.name for f in files]}")
 
     def _record(self, repo: str, tag: str) -> None:
         """每个版本执行成功立即记账（防中断后重跑）。"""

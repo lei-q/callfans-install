@@ -1,7 +1,7 @@
-"""前端静态文件更新器（§6.2）：oras 拉取 → 解压到 .new → 原子替换。
+"""前端静态文件更新器（§6.2）：oras 拉取 → 归档解压到 .new → 原子替换。
 
-- zip-slip 防护：成员路径不得逃逸目标目录
-- 全部条目共享单一顶层目录时自动剥掉（打包习惯差异兜底）
+- 归档格式按 magic 识别（zip / tar.gz / gz 单文件），非归档单文件直接落盘
+- 路径逃逸防护（zip-slip / tar ../）；单一顶层目录自动剥掉
 - `<alias>.bak` 保留上一版，替换成功后删除；失败时正式目录不受影响
 """
 
@@ -11,45 +11,20 @@ import logging
 import os
 import shutil
 import tempfile
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ...config import Config
 from ..local import StateStore
 from ..models import PendingItem
-from .artifact_puller import ArtifactPuller, ArtifactPullError, pick_file
+from .archive import extract_archive, flatten_single_root, is_archive
+from .artifact_puller import ArtifactPuller
 
 log = logging.getLogger(__name__)
 
 
 class FrontendError(RuntimeError):
     pass
-
-
-def safe_unzip(zip_path: Path, dest: Path) -> None:
-    """解压并防护 zip-slip；若单一顶层目录则剥掉。"""
-    with zipfile.ZipFile(zip_path) as zf:
-        names = zf.namelist()
-        roots = {n.split("/", 1)[0] for n in names if n and not n.endswith("/")}
-        strip = len(roots) == 1 and all("/" in n for n in names if n and not n.endswith("/"))
-        dest.mkdir(parents=True, exist_ok=True)
-        dest_resolved = dest.resolve()
-        for name in names:
-            member = name.split("/", 1)[1] if (strip and "/" in name) else name
-            if not member or member.endswith("/"):
-                continue
-            target = (dest / member).resolve()
-            if dest_resolved != target and dest_resolved not in target.parents:
-                raise FrontendError(f"zip 含非法路径: {name}")
-        for name in names:
-            member = name.split("/", 1)[1] if (strip and "/" in name) else name
-            if not member or member.endswith("/"):
-                continue
-            target = dest / member
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(name) as src, open(target, "wb") as out:
-                shutil.copyfileobj(src, out)
 
 
 class FrontendUpdater:
@@ -80,12 +55,19 @@ class FrontendUpdater:
         try:
             self.on_event("update_progress", {"item": item.name, "stage": "pull"})
             files = puller.pull(item.name, item.new, tmpdir)
-            zip_path = pick_file(files, ".zip")
+            artifact = next((f for f in files if is_archive(f)), None)
 
             self.on_event("update_progress", {"item": item.name, "stage": "unzip"})
             if new_dir.exists():
                 shutil.rmtree(new_dir)
-            safe_unzip(zip_path, new_dir)
+            if artifact is not None:
+                extract_archive(artifact, new_dir)
+                flatten_single_root(new_dir)
+            elif len(files) == 1:
+                new_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(files[0], new_dir / files[0].name)
+            else:
+                raise FrontendError(f"制品中未找到压缩包: {[f.name for f in files]}")
             if not any(new_dir.iterdir()):
                 raise FrontendError("解压结果为空目录")
 

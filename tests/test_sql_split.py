@@ -2,6 +2,7 @@
 
 import pytest
 
+from callfans.core.local import StateStore
 from callfans.core.updaters.sql_updater import SqlError, SqlUpdater, split_sql
 
 
@@ -147,3 +148,68 @@ class TestSqlUpdater:
         record = upd.update(PendingItem(name="callfans/db", type="sql", old=None, new="t"))
         assert record["result"] == "failed"
         assert "MySQL 配置缺失" in record["error"]
+
+
+class TestSqlArchiveArtifact:
+    """实际制品是打包文件（zip/tar.gz 内含多个 .sql）：解包后按序执行。"""
+
+    def _make_artifact(self, tmp_path, kind: str):
+        import zipfile
+
+        from callfans.core.updaters.archive import extract_archive  # noqa: F401 确认可导入
+        import tarfile, io
+
+        entries = {"01_create.sql": "CREATE TABLE a(id INT);", "02_insert.sql": "INSERT INTO a VALUES (1);"}
+        if kind == "zip":
+            p = tmp_path / "diff.zip"
+            with zipfile.ZipFile(p, "w") as zf:
+                for n, c in entries.items():
+                    zf.writestr(n, c)
+        else:
+            p = tmp_path / "diff.tar.gz"
+            with tarfile.open(p, "w:gz") as tf:
+                for n, c in entries.items():
+                    info = tarfile.TarInfo(n)
+                    data = c.encode()
+                    info.size = len(data)
+                    tf.addfile(info, io.BytesIO(data))
+        return p
+
+    def _run(self, tmp_path, kind, fail_on=None):
+        import shutil
+
+        from callfans.core.models import PendingItem
+        from tests.test_checker import make_cfg
+
+        artifact = self._make_artifact(tmp_path, kind)
+
+        class ZipPuller:
+            def pull(self, repo, tag, dest):
+                dst = dest / artifact.name
+                shutil.copy(artifact, dst)
+                return [dst]
+
+        cfg = make_cfg(mysql_host="h", mysql_user="u", mysql_password="p", mysql_database="d")
+        conn = FakeConn(fail_on=fail_on)
+        state = StateStore(tmp_path / "state.json")
+        upd = SqlUpdater(cfg, state=state, puller=ZipPuller(), mysql_connect=lambda: conn)
+        record = upd.update(PendingItem(name="callfans/db", type="sql", old=None, new="T"))
+        return record, state, conn
+
+    @pytest.mark.parametrize("kind", ["zip", "tar.gz"])
+    def test_archive_executes_all_sql_in_order(self, tmp_path, kind):
+        record, state, conn = self._run(tmp_path, kind)
+        assert record["result"] == "success", record["error"]
+        # 两个文件全部执行，且按文件名顺序（切分器会去掉结尾分号）
+        stmts = conn.cursor_obj.executed
+        assert stmts == ["CREATE TABLE a(id INT)", "INSERT INTO a VALUES (1)"]
+        assert conn.committed == 2  # 每文件独立事务
+        assert [a["tag"] for a in state.get("sql")["callfans/db"]["applied"]] == ["T"]
+
+    def test_archive_failure_reports_filename(self, tmp_path):
+        record, _, conn = self._run(tmp_path, "zip", fail_on=2)
+        assert record["result"] == "failed"
+        assert "02_insert.sql" in record["error"]  # 指明出错文件
+        assert conn.rolled_back == 1
+        # FakeCursor 先记录后抛错：01 的语句 + 02 的失败语句都在 executed 里
+        assert conn.cursor_obj.executed == ["CREATE TABLE a(id INT)", "INSERT INTO a VALUES (1)"]

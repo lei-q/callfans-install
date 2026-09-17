@@ -28,18 +28,26 @@ class DockerCLI:
 
     # ---------- 基础 ----------
 
-    def _run(self, args: list[str], timeout: int = 300) -> str:
+    def _raw(self, args: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
         cmd = ["docker", *args]
         env = {k: v for k, v in os.environ.items() if k not in self.env_exclusions}
         try:
-            proc = proc_run(cmd, timeout=timeout, env=env)  # CREATE_NO_WINDOW，防黑窗
+            return proc_run(cmd, timeout=timeout, env=env)  # CREATE_NO_WINDOW，防黑窗
         except FileNotFoundError as e:
             raise DockerError("未找到 docker 命令") from e
         except subprocess.TimeoutExpired as e:
             raise DockerError(f"docker {' '.join(args[:3])} 超时") from e
+
+    def _run(self, args: list[str], timeout: int = 300) -> str:
+        proc = self._raw(args, timeout)
         if proc.returncode != 0:
-            raise DockerError(f"docker {' '.join(args[:4])} 失败: {proc.stderr.strip()[:300]}")
-        return proc.stdout
+            # stderr 可能为 None（Windows 控制台句柄差异），空时带出 stdout
+            #（compose 有时把错误打到 stdout），保证真实失败原因可见
+            stderr = (proc.stderr or "").strip()
+            stdout = (proc.stdout or "").strip()
+            detail = stderr or stdout
+            raise DockerError(f"docker {' '.join(args[:4])} 失败: {detail[:300]}")
+        return proc.stdout or ""
 
     def compose(self, compose_file, *args: str, timeout: int = 300) -> str:
         return self._run(["compose", "-f", str(compose_file), *args], timeout=timeout)
@@ -101,8 +109,10 @@ class DockerCLI:
         self._run(["pull", ref], timeout=1800)
 
     def logs(self, name: str, tail: int = 30) -> str:
-        return self._run(["logs", "--tail", str(tail), name])
+        proc = self._raw(["logs", "--tail", str(tail), name])
+        # 容器日志可能分布在 stdout 与 stderr，合并返回
+        return (proc.stdout or "") + (proc.stderr or "")
 
     def containers_using_image(self, image_id: str) -> list[str]:
-        out = self._run(["ps", "-a", "-q", "--filter", f"ancestor={image_id}"])
+        out = self._run(["ps", "-a", "-q", "--filter", f"ancestor={image_id}"]) or ""
         return [line for line in out.splitlines() if line.strip()]

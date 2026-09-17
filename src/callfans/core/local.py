@@ -39,7 +39,9 @@ def docker_images() -> list[DockerImage]:
     except subprocess.TimeoutExpired as e:
         raise DockerError("docker images 超时") from e
     if proc.returncode != 0:
-        raise DockerError(f"docker images 失败: {proc.stderr.strip()[:300]}")
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        raise DockerError(f"docker images 失败: {(stderr or stdout)[:300]}")
     images: list[DockerImage] = []
     for line in proc.stdout.splitlines():
         line = line.strip()

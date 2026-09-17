@@ -4,7 +4,7 @@ import zipfile
 
 from callfans.core.local import StateStore
 from callfans.core.models import PendingItem, TYPE_FRONTEND
-from callfans.core.updaters.frontend_updater import FrontendUpdater, safe_unzip
+from callfans.core.updaters.frontend_updater import FrontendUpdater
 from tests.test_checker import make_cfg
 
 
@@ -92,3 +92,26 @@ def test_alias_empty_uses_repo_name(tmp_path):
         make_item(alias=None))  # runner/checker 保证 alias 非空，这里兜底
     assert record["result"] == "success"
     assert (out / "web-admin" / "index.html").exists()
+
+
+def test_tar_gz_artifact_with_single_root(tmp_path):
+    """实际制品为 tar.gz（含单一顶层目录）：解包 + 上提 + 替换。"""
+    import io
+    import tarfile
+
+    out = tmp_path / "webroot"
+    out.mkdir()
+    (out / "admin").mkdir()
+    (out / "admin" / "old.html").write_text("old", encoding="utf-8")
+    p = tmp_path / "dist.tar.gz"
+    with tarfile.open(p, "w:gz") as tf:
+        for name, content in {"web/index.html": "new", "web/app.js": "js"}.items():
+            info = tarfile.TarInfo(name)
+            data = content.encode()
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    cfg = make_cfg(frontend_output_dir=out)
+    record = FrontendUpdater(cfg, None, FakePuller(p)).update(make_item())
+    assert record["result"] == "success", record["error"]
+    assert (out / "admin" / "index.html").read_text() == "new"
+    assert not (out / "admin" / "old.html").exists()
