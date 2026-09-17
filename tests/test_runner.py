@@ -37,8 +37,10 @@ def make_item(type_, name):
 
 def test_order_sql_server_frontend(tmp_path):
     stubs = {"server": StubUpdater(), "frontend": StubUpdater(), "sql": StubUpdater()}
+    events: list = []
     runner = UpdateRunner(make_cfg(), updaters=stubs, history_path=tmp_path / "h.jsonl",
-                          run_preflight=False)
+                          run_preflight=False,
+                          on_event=lambda e, d: events.append((e, d)))
     report = runner.run(plan_of(make_item("frontend", "callfans/web"),
                                 make_item("server", "callfans/api"),
                                 make_item("sql", "callfans/db")))
@@ -51,6 +53,12 @@ def test_order_sql_server_frontend(tmp_path):
     # 历史逐条落盘
     lines = (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 3
+    # 事件流：update_begin（含总数，UI 进度条分母）→ 各项 → update_done
+    assert events[0][0] == "update_begin"
+    assert events[0][1]["total"] == 3
+    assert events[-1][0] == "update_done"
+    stage_events = [e for e, d in events if e == "update_progress" and d.get("stage") == "done"]
+    assert len(stage_events) == 3
 
 
 def test_single_failure_does_not_block(tmp_path):

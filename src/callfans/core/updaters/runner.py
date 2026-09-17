@@ -69,6 +69,10 @@ class UpdateRunner:
                 self.on_event("update_done", report)
                 return report
 
+        self.on_event("update_begin", {
+            "total": len(items),
+            "items": [{"name": i.name, "type": i.type} for i in items],
+        })
         for item in items:
             self.on_event("update_progress", {"item": item.name, "type": item.type, "stage": "start"})
             try:

@@ -27,10 +27,12 @@ class DockerImage:
 
 def docker_images() -> list[DockerImage]:
     """`docker images --digests` 结构化读取。"""
+    from .procs import run as proc_run
+
     try:
-        proc = subprocess.run(
+        proc = proc_run(
             ["docker", "images", "--format", "{{json .}}", "--digests"],
-            capture_output=True, text=True, timeout=60,
+            timeout=60,
         )
     except FileNotFoundError as e:
         raise DockerError("未找到 docker 命令") from e

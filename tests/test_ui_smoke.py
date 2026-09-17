@@ -115,6 +115,41 @@ def test_worker_lifecycle_failure(qapp):
     _pump(qapp, lambda: w._workers == [])
 
 
+def test_update_events_progress_bar_and_log(qapp):
+    """WS 事件驱动：进度条按项推进、阶段日志实时滚动、可清空。"""
+    from callfans.ui.main_window import MainWindow
+
+    w = MainWindow(poll_enabled=False)
+    w.refresh = lambda: None  # 隔离真实 IPC / 服务自拉起
+
+    assert w.progress.isHidden()
+    w._on_event({"event": "update_begin", "data": {"total": 2, "items": []}})
+    assert not w.progress.isHidden()
+    assert w.progress.maximum() == 2 and w.progress.value() == 0
+
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/db", "type": "sql", "stage": "start"}})
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/db", "stage": "sql_exec", "tag": "t1"}})
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/db", "stage": "done",
+                          "record": {"result": "success"}}})
+    assert w.progress.value() == 1
+
+    w._on_event({"event": "update_done", "data": {"summary": {"success": 1}}})
+    assert w.progress.value() == w.progress.maximum()
+
+    text = w.log_view.toPlainText()
+    assert "▶ [sql] callfans/db" in text
+    assert "callfans/db: sql_exec t1" in text
+    assert "■ callfans/db → success" in text
+    assert "共 2 项" in text
+
+    # 清空日志
+    w.btn_clear_log.click()
+    assert w.log_view.toPlainText() == ""
+
+
 def test_quit_button_exits_when_idle(qapp, monkeypatch):
     import callfans.ui.main_window as mw
 

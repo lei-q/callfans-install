@@ -11,6 +11,8 @@ import logging
 import os
 import subprocess
 
+from ..procs import run as proc_run
+
 log = logging.getLogger(__name__)
 
 
@@ -30,7 +32,7 @@ class DockerCLI:
         cmd = ["docker", *args]
         env = {k: v for k, v in os.environ.items() if k not in self.env_exclusions}
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+            proc = proc_run(cmd, timeout=timeout, env=env)  # CREATE_NO_WINDOW，防黑窗
         except FileNotFoundError as e:
             raise DockerError("未找到 docker 命令") from e
         except subprocess.TimeoutExpired as e:

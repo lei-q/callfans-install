@@ -13,8 +13,8 @@ from PySide6.QtCore import Qt, QObject, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import client
@@ -83,6 +83,12 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_quit)
         layout.addLayout(top)
 
+        # 更新进度条（点击立即更新后显示；update_begin 事件给出确切分母前为忙碌态）
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["类型", "名称", "当前版本", "新版本", "alias"])
@@ -105,7 +111,15 @@ class MainWindow(QMainWindow):
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumHeight(140)
-        self.log_view.setPlaceholderText("进度与结果")
+        self.log_view.setPlaceholderText("进度与结果（实时）")
+
+        log_header = QHBoxLayout()
+        log_header.addWidget(QLabel("进度与结果"))
+        log_header.addStretch(1)
+        self.btn_clear_log = QPushButton("清空日志")
+        self.btn_clear_log.clicked.connect(self.log_view.clear)
+        log_header.addWidget(self.btn_clear_log)
+        layout.addLayout(log_header)
         layout.addWidget(self.log_view)
 
         self.setCentralWidget(central)
@@ -115,6 +129,11 @@ class MainWindow(QMainWindow):
             self._timer.timeout.connect(self.refresh)
             self._timer.start(_POLL_SECONDS * 1000)
             self.refresh()
+            from .events import EventListener
+
+            self.listener = EventListener(self)
+            self.listener.event_received.connect(self._on_event)
+            self.listener.start()
 
     # ---------- 数据 ----------
 
@@ -196,12 +215,17 @@ class MainWindow(QMainWindow):
         self._busy = True
         self.btn_check.setEnabled(False)
         self.btn_update.setEnabled(False)
+        # 忙碌态进度条（update_begin 事件到达后切换为确切进度）
+        self.progress.setRange(0, 0)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
         self.log("开始更新（SQL → server → 前端）…")
         self._run(client.update, self._update_done, self._action_failed)
 
     def _update_done(self, report: dict) -> None:
         self._busy = False
         if report.get("preflight_error"):
+            self.progress.setVisible(False)
             self.log(f"前置检查未通过，未执行更新: {report['preflight_error']}")
             QMessageBox.warning(self, "更新", f"前置检查未通过，未执行任何更新:\n{report['preflight_error']}")
         else:
@@ -217,8 +241,40 @@ class MainWindow(QMainWindow):
 
     def _action_failed(self, error: str) -> None:
         self._busy = False
+        self.progress.setVisible(False)
         self.log(f"操作失败: {error}")
         self.refresh()
+
+    # ---------- 服务 WS 事件（实时进度） ----------
+
+    def _on_event(self, payload: dict) -> None:
+        event = payload.get("event")
+        data = payload.get("data") or {}
+        if event == "check_done":
+            self.refresh()
+        elif event == "update_begin":
+            total = max(int(data.get("total") or 0), 1)
+            self.progress.setRange(0, total)
+            self.progress.setValue(0)
+            self.progress.setVisible(True)
+            self.log(f"── 开始更新: 共 {total} 项 ──")
+        elif event == "update_progress":
+            item = data.get("item", "")
+            stage = data.get("stage", "")
+            if stage == "start":
+                self.log(f"▶ [{data.get('type', '')}] {item}")
+            elif stage == "done":
+                rec = data.get("record") or {}
+                self.log(f"■ {item} → {rec.get('result')}"
+                         + (f"（{rec.get('error')}）" if rec.get("error") else ""))
+                self.progress.setValue(self.progress.value() + 1)
+            else:  # stop_old / pull / up / verify / sql_pull / sql_exec / replace …
+                tag = f" {data['tag']}" if data.get("tag") else ""
+                ref = f" {data['ref']}" if data.get("ref") else ""
+                self.log(f"   · {item}: {stage}{tag}{ref}")
+        elif event == "update_done":
+            self.progress.setValue(self.progress.maximum())
+            self.refresh()
 
     # ---------- 退出 ----------
 
@@ -233,6 +289,9 @@ class MainWindow(QMainWindow):
         timer = getattr(self, "_timer", None)
         if timer is not None:
             timer.stop()
+        listener = getattr(self, "listener", None)
+        if listener is not None:
+            listener.stop()
         QApplication.quit()
 
     # ---------- 工具 ----------
