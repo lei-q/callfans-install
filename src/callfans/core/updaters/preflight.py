@@ -13,7 +13,7 @@ from .docker_cli import DockerCLI
 
 _MIN_FREE_BYTES = 100 * 1024 * 1024  # 100MB
 
-_MYSQL_KEYS = ("mysql_host", "mysql_user", "mysql_password", "mysql_database")
+_MYSQL_KEYS = ("mysql_host", "mysql_user", "mysql_password")  # mysql_database 可选（sql 内 USE 指定）
 
 
 class PreflightError(RuntimeError):

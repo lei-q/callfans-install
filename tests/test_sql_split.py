@@ -149,6 +149,35 @@ class TestSqlUpdater:
         assert record["result"] == "failed"
         assert "MySQL 配置缺失" in record["error"]
 
+    def test_database_optional_use_in_sql(self, tmp_path, monkeypatch):
+        """MYSQL_DATABASE 可选：不配置时连接不带默认库，由 sql 文件 USE 指定。"""
+        import pymysql
+
+        from callfans.core.models import PendingItem
+        from callfans.core.updaters.sql_updater import mysql_connect_from_cfg
+        from tests.test_checker import make_cfg
+
+        cfg = make_cfg(mysql_host="h", mysql_user="u", mysql_password="p")  # 无 database
+        captured: dict = {}
+
+        def fake_connect(**kwargs):
+            captured.clear()
+            captured.update(kwargs)
+            return FakeConn()
+
+        monkeypatch.setattr(pymysql, "connect", fake_connect)
+        mysql_connect_from_cfg(cfg)
+        assert "database" not in captured  # 未配置则不传
+        cfg2 = make_cfg(mysql_host="h", mysql_user="u", mysql_password="p", mysql_database="d")
+        mysql_connect_from_cfg(cfg2)
+        assert captured.get("database") == "d"  # 配置了则传
+
+        # 执行器：无 database 配置也能执行
+        upd = SqlUpdater(cfg, puller=FakePuller({"t": "USE biz; SELECT 1;"}),
+                         mysql_connect=lambda: FakeConn())
+        record = upd.update(PendingItem(name="callfans/db", type="sql", old=None, new="t"))
+        assert record["result"] == "success"
+
 
 class TestSqlArchiveArtifact:
     """实际制品是打包文件（zip/tar.gz 内含多个 .sql）：解包后按序执行。"""

@@ -27,18 +27,23 @@ class SqlError(RuntimeError):
 
 
 def mysql_connect_from_cfg(cfg: Config):
-    """按 .env 配置建 MySQL 连接（utf8mb4、手动事务）。"""
+    """按 .env 配置建 MySQL 连接（utf8mb4、手动事务）。
+
+    database 可选不指定——sql 文件内通过 USE 语句自行选库（2026-09-18 决策）。
+    """
     import pymysql
 
-    return pymysql.connect(
-        host=cfg.mysql_host,
-        port=cfg.mysql_port,
-        user=cfg.mysql_user,
-        password=cfg.mysql_password,
-        database=cfg.mysql_database,
-        charset="utf8mb4",
-        autocommit=False,
-    )
+    kwargs: dict = {
+        "host": cfg.mysql_host,
+        "port": cfg.mysql_port,
+        "user": cfg.mysql_user,
+        "password": cfg.mysql_password,
+        "charset": "utf8mb4",
+        "autocommit": False,
+    }
+    if cfg.mysql_database:
+        kwargs["database"] = cfg.mysql_database
+    return pymysql.connect(**kwargs)
 
 
 def split_sql(text: str) -> list[str]:
@@ -120,8 +125,8 @@ class SqlUpdater:
             "result": "failed", "error": None, "executed": [],
         }
         tags = item.new if isinstance(item.new, list) else [item.new]
-        missing = [k for k in ("mysql_host", "mysql_user", "mysql_password", "mysql_database")
-                   if not getattr(self.cfg, k)]
+        missing = [k for k in ("mysql_host", "mysql_user", "mysql_password")
+                   if not getattr(self.cfg, k)]  # mysql_database 可选（sql 内 USE 指定）
         if missing:
             record["error"] = f"MySQL 配置缺失: {', '.join(missing)}"
             return record
