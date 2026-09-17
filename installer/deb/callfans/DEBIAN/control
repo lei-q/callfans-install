@@ -2,7 +2,7 @@ Package: callfans
 Version: __VERSION__
 Architecture: amd64
 Maintainer: callfans <ops@callfans.local>
-Depends: callfans-service (= __VERSION__)
+Depends: callfans-service (= __VERSION__), libgl1, libegl1, libxkbcommon0, libdbus-1-3, libglib2.0-0
 Section: admin
 Priority: optional
 Description: callfans 托盘 UI（GNOME/KDE 桌面）

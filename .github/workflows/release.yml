@@ -14,6 +14,8 @@ jobs:
     steps:
       - run: apt-get update && apt-get install -y --no-install-recommends
              ca-certificates curl git binutils dpkg-dev
+             libgl1 libegl1 libxkbcommon0 libdbus-1-3 libglib2.0-0
+             libfontconfig1 fonts-dejavu-core
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.12
