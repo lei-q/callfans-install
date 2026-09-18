@@ -8,7 +8,10 @@ from pathlib import Path
 
 from ...config import Config
 from ..models import TYPE_FRONTEND, TYPE_SERVER, TYPE_SQL, UpdatePlan
-from .compose_env import extract_tag_var, find_image_template, iter_image_templates, read_env, vars_in
+from .compose_env import (
+    extract_tag_var, find_image_template, iter_image_templates, read_env,
+    read_text_loose, vars_in,
+)
 from .docker_cli import DockerCLI, DockerError
 
 _MIN_FREE_BYTES = 100 * 1024 * 1024  # 100MB
@@ -39,7 +42,7 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None,
                 try:
                     d.version_ok()
                     _, var_warnings = d.compose_config_checked(compose_file)
-                    text = compose_file.read_text(encoding="utf-8")
+                    text = read_text_loose(compose_file)
                     templates = iter_image_templates(text)
                     # 所有 tag 变量放行（更新器写入目标 tag / backfill 回填当前版本），
                     # 无论该服务本次是否有待更新；非 tag 变量缺失仍拦截

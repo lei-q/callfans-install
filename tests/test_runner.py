@@ -176,6 +176,21 @@ def test_preflight_deterministic_env_check(tmp_path):
     assert runner2.run(plan_of(make_item("server", "callfans/api")))["preflight_error"] is None
 
 
+def test_preflight_gbk_compose_file(tmp_path):
+    """compose 文件为 ANSI/GBK 编码（Windows 记事本）时不再解码崩溃（v0.2.3 回归）。"""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_bytes(
+        "# 部署编排配置\nservices:\n  api:\n    image: h/callfans/api:${API_TAG}\n".encode("gbk")
+    )
+    stubs = {"server": StubUpdater()}
+    docker = MissingVarDocker(["API_TAG"])
+    report = UpdateRunner(make_cfg(compose_file=compose), docker=docker,
+                          updaters=stubs, history_path=tmp_path / "h.jsonl"
+                          ).run(plan_of(make_item("server", "callfans/api")))
+    assert report["preflight_error"] is None
+    assert report["summary"]["success"] == 1
+
+
 def test_preflight_docker_login(tmp_path):
     """私有仓库：preflight 用 Harbor 凭据自动 docker login（v0.2.2 回归）。"""
     compose = tmp_path / "docker-compose.yml"

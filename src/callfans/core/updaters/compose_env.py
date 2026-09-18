@@ -19,6 +19,20 @@ class ComposeError(RuntimeError):
     pass
 
 
+def read_text_loose(path: Path) -> str:
+    """容错读取用户手编文件：Windows 记事本常存 ANSI/GBK（含中文注释）。
+
+    utf-8(-sig) 优先（先试对才能正确解中文），失败回退 GBK，最后兜底替换。
+    """
+    data = path.read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def strip_tag(ref: str) -> str:
     """去掉 tag/digest，保留 repo（注意 host:port 形式）。"""
     ref = ref.split("@", 1)[0]
@@ -89,7 +103,7 @@ def read_env(path: Path) -> dict[str, str]:
     env: dict[str, str] = {}
     if not path.exists():
         return env
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in read_text_loose(path).splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -99,8 +113,11 @@ def read_env(path: Path) -> dict[str, str]:
 
 
 def write_env(path: Path, updates: dict[str, str | None]) -> None:
-    """逐行重写：替换/追加/删除（value=None 删除）指定变量，保留其他行。原子写。"""
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    """逐行重写：替换/追加/删除（value=None 删除）指定变量，保留其他行。
+
+    原子写；容错读取原文件（GBK 注释也能保留，重写后统一为 UTF-8）。
+    """
+    lines = read_text_loose(path).splitlines() if path.exists() else []
     remaining = dict(updates)
     out: list[str] = []
     for line in lines:

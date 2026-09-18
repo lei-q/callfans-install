@@ -79,6 +79,22 @@ class TestEnvFile:
         env = read_env(p)
         assert env == {"API_TAG": "old", "OTHER": "keep me"}
 
+    def test_read_gbk_encoded(self, tmp_path):
+        """Windows 记事本 ANSI/GBK 保存（含中文注释）也能读。"""
+        p = tmp_path / ".env"
+        p.write_bytes("# 部署配置\nAPI_TAG=old\n".encode("gbk"))
+        assert read_env(p) == {"API_TAG": "old"}
+        # write_env 保留注释（正确解码）并统一为 UTF-8
+        write_env(p, {"API_TAG": "new"})
+        content = p.read_text(encoding="utf-8")
+        assert "部署配置" in content
+        assert "API_TAG=new" in content
+
+    def test_read_bom(self, tmp_path):
+        p = tmp_path / ".env"
+        p.write_bytes("K=V\n".encode("utf-8-sig"))
+        assert read_env(p) == {"K": "V"}
+
     def test_write_preserves_comments(self, tmp_path):
         p = tmp_path / ".env"
         p.write_text("# 注释\nAPI_TAG=old\nOTHER=1\n", encoding="utf-8")

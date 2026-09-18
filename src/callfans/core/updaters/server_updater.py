@@ -19,7 +19,7 @@ from ..local import DockerError, StateStore, docker_images, harbor_repo_of
 from ..models import PendingItem
 from .compose_env import (
     extract_tag_var, find_image_template, has_unresolved_vars, iter_image_templates,
-    read_env, render_ref, strip_tag, strip_vars, write_env,
+    read_env, read_text_loose, render_ref, strip_tag, strip_vars, write_env,
 )
 from .docker_cli import DockerCLI, DockerError
 
@@ -48,7 +48,7 @@ def backfill_tag_vars(cfg: Config) -> list[str]:
         return []
     compose_file = Path(cfg.compose_file)
     try:
-        text = compose_file.read_text(encoding="utf-8")
+        text = read_text_loose(compose_file)
     except OSError:
         return []
 
@@ -104,7 +104,7 @@ class ServerUpdater:
             return record
         compose_file = Path(self.cfg.compose_file)
         try:
-            text = compose_file.read_text(encoding="utf-8")
+            text = read_text_loose(compose_file)
         except OSError as e:
             record["error"] = f"compose 文件读取失败: {e}"
             return record
