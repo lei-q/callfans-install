@@ -148,6 +148,10 @@ class SqlUpdater:
                 conn = connect()
                 try:
                     for sql_file in sql_files:
+                        self.on_event("update_progress", {
+                            "item": item.name, "stage": "sql_exec", "tag": tag,
+                            "file": sql_file.name,
+                        })
                         statements = split_sql(sql_file.read_text(encoding="utf-8"))
                         if not statements:
                             raise SqlError(f"{tag}/{sql_file.name}: SQL 文件为空")

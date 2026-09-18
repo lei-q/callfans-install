@@ -150,6 +150,37 @@ def test_update_events_progress_bar_and_log(qapp):
     assert w.log_view.toPlainText() == ""
 
 
+def test_stage_indicator_animation(qapp):
+    """长阶段体验：pull 进度滚动进日志、舞台指示器带动画与倒计时、完成后归位。"""
+    from callfans.ui.main_window import MainWindow
+
+    w = MainWindow(poll_enabled=False)
+    w.refresh = lambda: None
+
+    w._on_event({"event": "update_begin", "data": {"total": 1, "items": []}})
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/callfans-admin", "type": "server", "stage": "start"}})
+    # pull 进度行 → 日志滚动 + 指示器激活
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/callfans-admin", "stage": "pull_progress",
+                          "line": "abc123: Downloading [===>  ] 12.3MB/65.5MB"}})
+    assert "12.3MB/65.5MB" in w.log_view.toPlainText()
+    assert w._spinner.isActive()
+    assert "拉取新镜像" in w.stage_label.text()
+    # 健康观察倒计时：只动指示器不刷日志
+    before = w.log_view.toPlainText()
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/callfans-admin", "stage": "verify", "remaining": 43}})
+    assert "剩余 43s" in w.stage_label.text()
+    assert w.log_view.toPlainText() == before
+    # 单项完成 → 指示器归位、动画停止
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/callfans-admin", "stage": "done",
+                          "record": {"result": "success"}}})
+    assert not w._spinner.isActive()
+    assert w.stage_label.text() == ""
+
+
 def test_quit_button_exits_when_idle(qapp, monkeypatch):
     import callfans.ui.main_window as mw
 

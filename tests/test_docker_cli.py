@@ -69,3 +69,54 @@ def test_compose_config_checked_collects_missing_vars(monkeypatch):
     config, warnings = DockerCLI().compose_config_checked(Path("docker-compose.yml"))
     assert config == {"services": {}}
     assert warnings == ["MYSQL_ROOT_PASSWORD", "TIMEZONE"]
+
+
+def test_pull_streams_lines_to_callback(monkeypatch):
+    """docker pull 流式：进度行实时回调，失败时带尾部输出。"""
+    import callfans.core.updaters.docker_cli as dc
+
+    class _Stream:
+        def __init__(self, lines):
+            self._it = iter(lines)
+
+        def readline(self):
+            try:
+                return next(self._it)
+            except StopIteration:
+                return b""
+
+        def close(self):
+            pass
+
+    lines = [
+        b"aaa: Pulling fs layer\n",
+        b"aaa: Downloading [===>   ] 12.3MB/65.5MB\n",
+        b"aaa: Pull complete\n",
+        b"Status: Downloaded newer image\n",
+    ]
+
+    class FakeProc:
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = _Stream(lines)
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(dc.subprocess, "Popen", lambda *a, **k: FakeProc())
+    got: list[str] = []
+    out = DockerCLI().pull("reg/x:tag", on_line=got.append)
+    assert "aaa: Pull complete" in got
+    assert "Status: Downloaded newer image" in out
+
+    class FailingProc(FakeProc):
+        returncode = 1
+
+        def wait(self):
+            return 1
+
+    lines.append(b"Error response from daemon: not found\n")
+    monkeypatch.setattr(dc.subprocess, "Popen", lambda *a, **k: FailingProc())
+    with pytest.raises(DockerError, match="not found"):
+        DockerCLI().pull("reg/x:missing", on_line=None)

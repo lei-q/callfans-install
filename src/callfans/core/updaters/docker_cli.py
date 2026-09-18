@@ -12,7 +12,9 @@ import logging
 import os
 import re
 import subprocess
+import time
 
+from ..procs import NO_WINDOW
 from ..procs import run as proc_run
 
 log = logging.getLogger(__name__)
@@ -115,12 +117,52 @@ class DockerCLI:
         except json.JSONDecodeError:  # 旧版本逐行输出
             return [json.loads(line) for line in out.splitlines() if line.strip()]
 
-    def compose_up(self, compose_file, service: str, force_recreate: bool = False) -> None:
-        # --no-deps：只重建目标服务，不动其他服务
-        args = ["up", "-d", "--no-deps"]
+    def _stream(self, args: list[str], on_line=None, timeout: int = 1800) -> str:
+        """流式执行 docker 命令：逐行回调（进度日志），结束后返回全部输出。
+
+        供 pull / compose up 等长命令实时反馈用；行解码容错（utf-8 → 替换）。
+        """
+        cmd = ["docker", *args]
+        env = {k: v for k, v in os.environ.items() if k not in self.env_exclusions}
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=NO_WINDOW, env=env,
+            )
+        except FileNotFoundError as e:
+            raise DockerError("未找到 docker 命令") from e
+        lines: list[str] = []
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                raw = proc.stdout.readline()
+                if not raw:
+                    break
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                lines.append(line)
+                if on_line and line.strip():
+                    on_line(line)
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    raise DockerError(f"docker {' '.join(args[:3])} 超时（>{timeout}s）")
+            proc.wait()
+        finally:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+        if proc.returncode != 0:
+            tail = "\n".join(lines[-10:])
+            raise DockerError(f"docker {' '.join(args[:4])} 失败: {self._failure_detail(tail, '')}")
+        return "\n".join(lines)
+
+    def compose_up(self, compose_file, service: str, force_recreate: bool = False,
+                   on_line=None) -> None:
+        # --no-deps：只重建目标服务，不动其他服务；流式回传 Creating/Starting 行
+        args = ["compose", "-f", str(compose_file), "up", "-d", "--no-deps"]
         if force_recreate:
             args.append("--force-recreate")
-        self.compose(compose_file, *args, service, timeout=600)
+        self._stream([*args, service], on_line=on_line, timeout=600)
 
     def containers_by_service(self, service: str) -> list[str]:
         """按 compose service 标签过滤容器名（项目无关，比 compose ps 可靠）。"""
@@ -163,8 +205,9 @@ class DockerCLI:
     def rmi(self, ref: str) -> None:
         self._run(["rmi", ref], timeout=120)
 
-    def pull(self, ref: str) -> None:
-        self._run(["pull", ref], timeout=1800)
+    def pull(self, ref: str, on_line=None) -> str:
+        """拉取镜像；on_line 实时回传 docker pull 的进度行（层下载/完成等）。"""
+        return self._stream(["pull", ref], on_line=on_line, timeout=1800)
 
     def logs(self, name: str, tail: int = 30) -> str:
         proc = self._raw(["logs", "--tail", str(tail), name])

@@ -22,6 +22,22 @@ from .client import ServiceUnavailable
 
 _POLL_SECONDS = 5
 
+# 阶段 → 展示文案（舞台指示器与日志）
+_STAGE_TEXT = {
+    "stop_old": "停止旧容器",
+    "pull": "拉取新镜像",
+    "pull_progress": "拉取新镜像",
+    "up": "启动新容器",
+    "up_progress": "启动新容器",
+    "verify": "健康观察",
+    "sql_pull": "拉取 SQL 制品",
+    "sql_exec": "执行 SQL",
+    "unzip": "解压前端包",
+    "replace": "替换前端目录",
+    "tag_backfill": "补齐 tag 变量",
+}
+_SPINNER_FRAMES = "|/-\\"
+
 
 class Worker(QObject):
     """daemon 线程执行阻塞 IPC，结果经信号（自动队列投递）回主线程。
@@ -83,11 +99,22 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_quit)
         layout.addLayout(top)
 
-        # 更新进度条（点击立即更新后显示；update_begin 事件给出确切分母前为忙碌态）
+        # 更新进度条 + 舞台指示器（阶段文字 + 旋转动画，长阶段不"死屏"）
+        progress_row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setVisible(False)
-        layout.addWidget(self.progress)
+        self.stage_label = QLabel("")
+        self.stage_label.setStyleSheet("color: #666;")
+        progress_row.addWidget(self.progress, 1)
+        progress_row.addWidget(self.stage_label)
+        layout.addLayout(progress_row)
+
+        self._stage_text = ""
+        self._spinner_idx = 0
+        self._spinner = QTimer(self)
+        self._spinner.setInterval(120)
+        self._spinner.timeout.connect(self._tick_spinner)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.table = QTableWidget(0, 5)
@@ -111,6 +138,7 @@ class MainWindow(QMainWindow):
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumHeight(140)
+        self.log_view.setMaximumBlockCount(2000)  # pull 进度行多，自动裁剪旧行
         self.log_view.setPlaceholderText("进度与结果（实时）")
 
         log_header = QHBoxLayout()
@@ -247,6 +275,31 @@ class MainWindow(QMainWindow):
 
     # ---------- 服务 WS 事件（实时进度） ----------
 
+    # ---------- 舞台指示器 ----------
+
+    def _set_stage(self, text: str | None) -> None:
+        """当前阶段文字；None 表示空闲（停动画）。"""
+        self._stage_text = text or ""
+        if self._stage_text:
+            if not self._spinner.isActive():
+                self._spinner.start()
+        else:
+            self._spinner.stop()
+        self._render_stage()
+
+    def _tick_spinner(self) -> None:
+        self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_FRAMES)
+        self._render_stage()
+
+    def _render_stage(self) -> None:
+        if self._stage_text:
+            frame = _SPINNER_FRAMES[self._spinner_idx]
+            self.stage_label.setText(f"{frame} {self._stage_text}")
+        else:
+            self.stage_label.setText("")
+
+    # ---------- 服务 WS 事件（实时进度） ----------
+
     def _on_event(self, payload: dict) -> None:
         event = payload.get("event")
         data = payload.get("data") or {}
@@ -257,6 +310,7 @@ class MainWindow(QMainWindow):
             self.progress.setRange(0, total)
             self.progress.setValue(0)
             self.progress.setVisible(True)
+            self._set_stage(None)
             self.log(f"── 开始更新: 共 {total} 项 ──")
         elif event == "update_progress":
             item = data.get("item", "")
@@ -264,18 +318,37 @@ class MainWindow(QMainWindow):
             if stage == "start":
                 self.log(f"▶ [{data.get('type', '')}] {item}")
             elif stage == "done":
+                self._set_stage(None)
                 rec = data.get("record") or {}
                 self.log(f"■ {item} → {rec.get('result')}"
                          + (f"（{rec.get('error')}）" if rec.get("error") else ""))
                 self.progress.setValue(self.progress.value() + 1)
-            else:  # stop_old / pull / up / verify / sql_pull / sql_exec / tag_backfill …
-                extras = " ".join(str(data[k]) for k in ("tag", "file", "ref") if data.get(k))
-                if data.get("files"):
-                    extras += f"（{len(data['files'])} 个文件）"
+            elif stage in ("pull_progress", "up_progress"):
+                line = str(data.get("line", "")).strip()
+                if line:
+                    mark = "↓" if stage == "pull_progress" else " "
+                    self.log(f"   {mark} {line}")
+                    self._set_stage(_STAGE_TEXT.get(stage))
+            elif stage == "verify" and data.get("remaining") is not None:
+                self._set_stage(f"{_STAGE_TEXT['verify']}（剩余 {data['remaining']}s）")
+            else:  # stop_old / pull / up / sql_pull / sql_exec / unzip / replace / tag_backfill …
+                text = _STAGE_TEXT.get(stage, stage)
+                detail = ""
+                for k in ("file", "tag", "service"):
+                    if data.get(k):
+                        detail = f" {data[k]}"
+                        break
                 if data.get("vars"):
-                    extras += "← " + ",".join(data["vars"])
-                self.log(f"   · {item}: {stage}{' ' + extras if extras else ''}".rstrip())
+                    detail += " ← " + ",".join(data["vars"])
+                self._set_stage(text + detail)
+                if stage != "verify":  # verify 走倒计时分支，不刷日志
+                    extras = " ".join(str(data[k]) for k in ("tag", "file", "ref") if data.get(k))
+                    if data.get("files"):
+                        extras += f"（{len(data['files'])} 个文件）"
+                    if extras:
+                        self.log(f"   · {item}: {stage} {extras}".rstrip())
         elif event == "update_done":
+            self._set_stage(None)
             self.progress.setValue(self.progress.maximum())
             self.refresh()
 

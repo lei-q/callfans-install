@@ -54,8 +54,10 @@ class FakeDocker:
         # 模拟部分环境的不可靠行为：compose ps 可为空（container_name 兜底路径）
         return [{"Name": n, "Service": c["service"]} for n, c in self.containers.items()]
 
-    def compose_up(self, f, service, force_recreate=False):
+    def compose_up(self, f, service, force_recreate=False, on_line=None):
         self.actions.append(f"up:{service}" + ("!" if force_recreate else ""))
+        if on_line:
+            on_line(f"Container {service} Recreate")
         self._ups += 1
         ref = self._rendered(service)
         image_id = self.images.get(ref)
@@ -106,10 +108,14 @@ class FakeDocker:
         self.actions.append(f"rmi:{ref}")
         self.images = {r: i for r, i in self.images.items() if i != ref and r != ref}
 
-    def pull(self, ref):
+    def pull(self, ref, on_line=None):
         self.actions.append(f"pull:{ref}")
         self._n += 1
         self.images[ref] = f"img-{self._n}"
+        if on_line:
+            on_line("aaa: Pulling fs layer")
+            on_line("aaa: Downloading [===>  ] 12.3MB/65.5MB")
+            on_line("Status: Downloaded for " + ref)
 
     def start(self, name):
         self.actions.append(f"start:{name}")
@@ -353,7 +359,7 @@ def test_not_found_error_includes_ps_snapshot(compose_file, tmp_path):
     fake = FakeDocker(compose_file, {"api": TPL})
     fake.compose_ps = lambda f: []
     fake.containers_by_service = lambda svc: []  # 标签过滤也找不到
-    fake.compose_up = lambda f, svc, force_recreate=False: fake.actions.append(f"up:{svc}")
+    fake.compose_up = lambda f, svc, force_recreate=False, on_line=None: fake.actions.append(f"up:{svc}")
     fake.pull(render_ref(TPL, OLD))  # 本地无容器：首装路径
     cfg = make_cfg(compose_file=compose_file, health_wait_seconds=2)
 

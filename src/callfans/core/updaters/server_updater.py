@@ -152,13 +152,29 @@ class ServerUpdater:
             if has_unresolved_vars(new_ref):
                 raise UpdateFailure(f"镜像引用存在未定义变量: {new_ref}（检查 compose 同目录 .env）")
             self._emit(item, "pull", ref=new_ref)
-            self.docker.pull(new_ref)
+            last_pull_evt = [0.0]
+            pull_milestones = ("Pulling fs layer", "Already exists", "Verifying Checksum",
+                               "Download complete", "Pull complete", "Digest:", "Status:", "Error")
+
+            def on_pull_line(line: str, _item=item) -> None:
+                now = time.monotonic()
+                # 里程碑行立即转发；百分比类行限频 2s，避免刷屏
+                if any(k in line for k in pull_milestones) or now - last_pull_evt[0] >= 2.0:
+                    last_pull_evt[0] = now
+                    self.on_event("update_progress", {
+                        "item": _item.name, "type": "server",
+                        "stage": "pull_progress", "line": line[:200],
+                    })
+
+            self.docker.pull(new_ref, on_line=on_pull_line)
             new_image_id = self.docker.inspect_image(new_ref).get("Id")
 
             write_env(env_path, {var: item.new})
             env_written = True
             self._emit(item, "up", service=service)
-            self.docker.compose_up(compose_file, service)
+            self.docker.compose_up(compose_file, service, on_line=lambda l, _item=item: self.on_event(
+                "update_progress", {"item": _item.name, "type": "server",
+                                    "stage": "up_progress", "line": l[:200]}))
 
             new_ctn = self._find_container(compose_file, service, container_name=cname)
             if new_ctn is None:
@@ -173,7 +189,7 @@ class ServerUpdater:
                 raise UpdateFailure("新容器未使用新镜像（image id 不符）")
 
             self._emit(item, "verify", wait=self.cfg.health_wait_seconds)
-            self._verify(new_ctn)
+            self._verify(item, new_ctn)
 
             # 成功清理；清理失败只记 warning，不影响结果
             warns: list[str] = []
@@ -236,11 +252,18 @@ class ServerUpdater:
                 return name
         return None
 
-    def _verify(self, new_ctn: str) -> None:
-        """运行成功判定：观察窗口内持续 Running、不重启循环；有 healthcheck 则 healthy。"""
+    def _verify(self, item: PendingItem, new_ctn: str) -> None:
+        """运行成功判定：观察窗口内持续 Running、不重启循环；有 healthcheck 则 healthy。
+
+        每轮（约 1s）广播剩余秒数，驱动 UI 倒计时。
+        """
         deadline = time.monotonic() + max(5, self.cfg.health_wait_seconds)
         stable = 0
         while time.monotonic() < deadline:
+            self.on_event("update_progress", {
+                "item": item.name, "type": "server", "stage": "verify",
+                "remaining": max(0, int(deadline - time.monotonic())),
+            })
             state = self.docker.inspect_container(new_ctn).get("State", {})
             if not state.get("Running"):
                 raise UpdateFailure(f"新容器未在运行（exit={state.get('ExitCode')}）")
