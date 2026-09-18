@@ -9,7 +9,7 @@ from pathlib import Path
 from ...config import Config
 from ..models import TYPE_FRONTEND, TYPE_SERVER, TYPE_SQL, UpdatePlan
 from .compose_env import extract_tag_var, find_image_template, iter_image_templates, read_env, vars_in
-from .docker_cli import DockerCLI
+from .docker_cli import DockerCLI, DockerError
 
 _MIN_FREE_BYTES = 100 * 1024 * 1024  # 100MB
 
@@ -61,6 +61,15 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None,
                             f"compose 变量未定义: {', '.join(missing)}"
                             "（需在 compose 同目录 .env 定义；tag 变量由更新器维护）"
                         )
+                    # 私有仓库 pull 需 daemon 侧凭据：用 Harbor 账号自动 login（幂等）
+                    registry = env_values.get("HARBOR_REGISTRY")
+                    if registry:
+                        try:
+                            d.login(registry, cfg.harbor_username, cfg.harbor_password)
+                        except DockerError as e:
+                            errors.append(
+                                f"{e}（检查 HARBOR_USERNAME/PASSWORD 在该仓库有效）"
+                            )
                 except Exception as e:
                     errors.append(f"docker/compose 不可用: {e}")
 

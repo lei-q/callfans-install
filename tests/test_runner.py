@@ -96,16 +96,25 @@ def test_preflight_failure_aborts_all(tmp_path):
 
 
 class MissingVarDocker:
-    """compose config 报缺变量（v0.1.5 Windows 实测场景）。"""
+    """compose config 报缺变量（v0.1.5 Windows 实测场景）；login 可注入。"""
 
-    def __init__(self, missing):
+    def __init__(self, missing, login_error=None):
         self.missing = missing
+        self.login_error = login_error
+        self.logins: list = []
 
     def version_ok(self):
         return True
 
     def compose_config_checked(self, f):
         return {"services": {}}, self.missing
+
+    def login(self, registry, username, password):
+        self.logins.append((registry, username))
+        if self.login_error:
+            from callfans.core.updaters.docker_cli import DockerError
+
+            raise DockerError(self.login_error)
 
 
 def test_preflight_blocks_undefined_compose_vars(tmp_path):
@@ -165,6 +174,33 @@ def test_preflight_deterministic_env_check(tmp_path):
     runner2 = UpdateRunner(make_cfg(compose_file=compose), docker=docker,
                            updaters=stubs, history_path=tmp_path / "h.jsonl")
     assert runner2.run(plan_of(make_item("server", "callfans/api")))["preflight_error"] is None
+
+
+def test_preflight_docker_login(tmp_path):
+    """私有仓库：preflight 用 Harbor 凭据自动 docker login（v0.2.2 回归）。"""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n", encoding="utf-8"
+    )
+    (tmp_path / ".env").write_text(
+        "HARBOR_REGISTRY=47.87.66.98\nAPI_TAG=T1\n", encoding="utf-8"
+    )
+    stubs = {"server": StubUpdater()}
+
+    # 登录成功 → preflight 通过，且确实对仓库地址 login
+    docker = MissingVarDocker([])
+    UpdateRunner(make_cfg(compose_file=compose), docker=docker,
+                 updaters=stubs, history_path=tmp_path / "h.jsonl"
+                 ).run(plan_of(make_item("server", "callfans/api")))
+    assert docker.logins == [("47.87.66.98", "u")]
+
+    # 登录失败 → 拦截并提示凭据
+    docker2 = MissingVarDocker([], login_error="docker login 47.87.66.98 失败: unauthorized")
+    report = UpdateRunner(make_cfg(compose_file=compose), docker=docker2,
+                          updaters=stubs, history_path=tmp_path / "h.jsonl"
+                          ).run(plan_of(make_item("server", "callfans/api")))
+    assert "docker login" in report["preflight_error"]
+    assert "HARBOR_USERNAME/PASSWORD" in report["preflight_error"]
 
 
 def test_updater_exception_isolated(tmp_path):

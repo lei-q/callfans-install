@@ -71,6 +71,24 @@ class DockerCLI:
         self._run(["version", "--format", "{{.Server.Version}}"])
         return True
 
+    def login(self, registry: str, username: str, password: str) -> None:
+        """docker login（密码经 stdin，不进进程列表）。
+
+        pull 认证走 daemon 侧凭据，与服务自身的 Harbor API 账号无关：
+        私有仓库（如 47.87.66.98）必须先 login 才能 pull。
+        """
+        try:
+            proc = proc_run(
+                ["docker", "login", registry, "-u", username, "--password-stdin"],
+                input=password, timeout=60,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise DockerError(f"docker login {registry} 超时") from e
+        if proc.returncode != 0:
+            raise DockerError(
+                f"docker login {registry} 失败: {self._failure_detail(proc.stderr, proc.stdout)}"
+            )
+
     def compose_config(self, compose_file) -> dict:
         return self.compose_config_checked(compose_file)[0]
 
