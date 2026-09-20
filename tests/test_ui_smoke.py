@@ -194,10 +194,13 @@ def test_sqlsync_events_stage_and_notify(qapp):
     w._on_event({"event": "sqlsync_progress",
                  "data": {"stage": "execute", "index": 3, "total": 12}})
     assert "SQL 同步 3/12" in w.stage_label.text()
-    # 成功：日志记录、不通知
+    # 成功：日志记录、不通知；带语句数与无差异区分
     w._on_event({"event": "sqlsync_done",
-                 "data": {"status": "success", "run_id": "R1"}})
-    assert "SQL 同步完成" in w.log_view.toPlainText()
+                 "data": {"status": "success", "run_id": "R1", "executed": 3, "total": 3}})
+    assert "SQL 同步完成：语句 3/3" in w.log_view.toPlainText()
+    w._on_event({"event": "sqlsync_done",
+                 "data": {"status": "success", "run_id": "R2", "total": 0}})
+    assert "SQL 同步无差异" in w.log_view.toPlainText()
     assert notified == []
     assert w.stage_label.text() == ""
     # 失败：日志 + 托盘通知

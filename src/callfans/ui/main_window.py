@@ -368,7 +368,12 @@ class MainWindow(QMainWindow):
             self._set_stage(None)
             status = data.get("status", "")
             if status == "success":
-                self.log(f"◆ SQL 同步完成（run {data.get('run_id')}）")
+                total = data.get("total") or 0
+                if total == 0:
+                    self.log(f"◆ SQL 同步无差异（run {data.get('run_id')}）")
+                else:
+                    self.log(f"◆ SQL 同步完成：语句 {data.get('executed')}/{total}"
+                             f"（run {data.get('run_id')}）")
             else:
                 msg = data.get("error") or data.get("guard") or status
                 self.log(f"◆ SQL 同步未完成 [{status}]: {msg}")
