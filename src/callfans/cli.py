@@ -16,7 +16,7 @@ from .config import Config, ConfigError
 from .core.checker import Checker
 from .core.harbor import HarborClient
 from .core.local import StateStore
-from .paths import runtime_candidates, state_file
+from .paths import env_file, runtime_candidates, state_file
 from .service.runtime import read_runtime
 
 app = typer.Typer(no_args_is_help=True, help="callfans 镜像更新器")
@@ -25,7 +25,15 @@ app.add_typer(service_app, name="service")
 sqlsync_app = typer.Typer(help="云库 → B 库结构与配置同步")
 app.add_typer(sqlsync_app, name="sqlsync")
 
-EnvOpt = typer.Option(Path(".env"), "--env", help=".env 配置路径")
+EnvOpt = typer.Option(
+    None, "--env",
+    help=".env 配置路径（默认自动定位：CALLFANS_ENV → 程序目录 → 当前目录）",
+)
+
+
+def _env_path(env) -> Path:
+    """解析 --env：未指定时与 UI/服务同源自动定位（v0.3.7：此前按 cwd 找，客户机任意目录执行即报配置缺失）。"""
+    return Path(env) if env is not None else env_file()
 
 
 def _runtime_info() -> dict | None:
@@ -84,7 +92,7 @@ def serve(
     from .service.app import run_service
 
     try:
-        run_service(env, port)
+        run_service(_env_path(env), port)
     except KeyboardInterrupt:
         pass
 
@@ -105,7 +113,7 @@ def check(env: Path = EnvOpt) -> None:
             client.close()
     logging.basicConfig(level=logging.INFO)
     try:
-        cfg = Config.from_env(env)
+        cfg = Config.from_env(_env_path(env))
     except ConfigError as e:
         typer.secho(str(e), fg=typer.colors.RED)
         raise typer.Exit(1)
@@ -154,7 +162,7 @@ def update(env: Path = EnvOpt) -> None:
             client.close()
     logging.basicConfig(level=logging.INFO)
     try:
-        cfg = Config.from_env(env)
+        cfg = Config.from_env(_env_path(env))
     except ConfigError as e:
         typer.secho(str(e), fg=typer.colors.RED)
         raise typer.Exit(1)
@@ -244,6 +252,7 @@ def _sync_runtime(env: Path):
     """sqlsync 独立入口：不要求 Harbor 配置，仅加载 .env 后建运行时。"""
     from dotenv import load_dotenv
 
+    env = _env_path(env)
     if env.exists():
         load_dotenv(env)
     from .core.sync.config import CloudSyncConfig, SyncConfigError
@@ -259,7 +268,7 @@ def _sync_runtime(env: Path):
 @sqlsync_app.command("status")
 def sqlsync_status(env: Path = EnvOpt) -> None:
     """双库连通性、上次同步、当前漂移概要。"""
-    rt = _sync_runtime(env)
+    rt = _sync_runtime(_env_path(env))
     try:
         st = rt.status()
     except Exception as e:
@@ -284,7 +293,7 @@ def sqlsync_status(env: Path = EnvOpt) -> None:
 @sqlsync_app.command("plan")
 def sqlsync_plan(env: Path = EnvOpt) -> None:
     """生成同步计划（只读，输出 Up/Down 与影响评估）。"""
-    rt = _sync_runtime(env)
+    rt = _sync_runtime(_env_path(env))
     try:
         plan = rt.build()
     except Exception as e:
@@ -303,7 +312,7 @@ def sqlsync_apply(
     force: bool = typer.Option(False, "--force", help="越过 fatal 护栏（全量审计）"),
 ) -> None:
     """执行同步（备份先行；失败可用 rollback 或重跑收敛）。"""
-    rt = _sync_runtime(env)
+    rt = _sync_runtime(_env_path(env))
     try:
         report = rt.apply(force=force)
     except Exception as e:
@@ -324,7 +333,7 @@ def sqlsync_rollback(
     run_id: str = typer.Option(..., "--run-id", help="要回滚的同步 run_id"),
 ) -> None:
     """按 run_id 执行 Down 脚本（备份依赖项见语句注释）。"""
-    rt = _sync_runtime(env)
+    rt = _sync_runtime(_env_path(env))
     try:
         report = rt.rollback(run_id)
     except FileNotFoundError as e:
