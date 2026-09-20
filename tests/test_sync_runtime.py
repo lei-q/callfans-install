@@ -25,8 +25,8 @@ class FakeResult:
 
 
 class FakeConnCtx:
-    def __init__(self, rows):
-        self._rows = rows
+    def __init__(self, engine):
+        self._engine = engine
 
     def __enter__(self):
         return self
@@ -35,18 +35,23 @@ class FakeConnCtx:
         return False
 
     def execute(self, sql):
-        return FakeResult(self._rows)
+        if "information_schema" in str(sql):
+            # 列探测：返回 (column_name,) 元组
+            return FakeResult([(c,) for c in self._engine.columns])
+        return FakeResult(self._engine.rows)
 
 
 class FakeEngine:
-    def __init__(self, rows=None, error=None):
+    def __init__(self, rows=None, error=None,
+                 columns=("name", "data_sync", "pk", "ignore_columns")):
         self.rows = rows or []
         self.error = error
+        self.columns = list(columns)
 
     def connect(self):
         if self.error:
             raise self.error
-        return FakeConnCtx(self.rows)
+        return FakeConnCtx(self)
 
 
 MANIFEST_ROWS = [
@@ -65,6 +70,23 @@ def test_fetch_manifest_parses_rules():
 def test_fetch_manifest_error_mentions_ddl():
     with pytest.raises(ManifestError, match="建表 DDL"):
         fetch_manifest(FakeEngine(error=RuntimeError("table doesn't exist")))
+
+
+def test_fetch_manifest_partial_columns():
+    """旧元表缺 ignore_columns 列：探测列后取默认值，不再整体不可读。"""
+    engine = FakeEngine(
+        rows=[{"name": "t1", "data_sync": 1, "pk": "id"}],
+        columns=("name", "data_sync", "pk"),
+    )
+    rules = fetch_manifest(engine)
+    assert rules[0].name == "t1"
+    assert rules[0].ignore_columns == []  # 缺列默认
+
+
+def test_fetch_manifest_missing_name_column():
+    engine = FakeEngine(rows=[], columns=("data_sync",))
+    with pytest.raises(ManifestError, match="缺 name 列"):
+        fetch_manifest(engine)
 
 
 def test_fetch_manifest_empty_rejected():

@@ -9,9 +9,9 @@ from sqlalchemy import text
 
 from .config import TableRule
 
-_MANIFEST_SQL = (
-    "SELECT name, data_sync, pk, ignore_columns FROM callfans_sync.tables ORDER BY name"
-)
+_MANIFEST_DB = "callfans_sync"
+_MANIFEST_TABLE = "tables"
+_MANIFEST_COLS = ("name", "data_sync", "pk", "ignore_columns")
 
 
 class ManifestError(RuntimeError):
@@ -19,10 +19,29 @@ class ManifestError(RuntimeError):
 
 
 def fetch_manifest(cloud_engine) -> list[TableRule]:
-    """从云库 callfans_sync.tables 读取表清单。"""
+    """从云库 callfans_sync.tables 读取表清单。
+
+    兼容列不齐的旧元表：探测实际存在的列（name 必需），缺省列取默认值
+    （2026-09-21 实测：客户云库元表少 ignore_columns 列导致整体不可读）。
+    """
     try:
         with cloud_engine.connect() as conn:
-            rows = [dict(r) for r in conn.execute(text(_MANIFEST_SQL)).mappings()]
+            cols = [str(r[0]) for r in conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                f"WHERE table_schema = '{_MANIFEST_DB}' "
+                f"AND table_name = '{_MANIFEST_TABLE}'"
+            ))]
+            if "name" not in cols:
+                raise ManifestError(
+                    "云端元表 callfans_sync.tables 不存在或缺 name 列，"
+                    "需在云库执行建表 DDL（见 core/sync/config.py 模块注释）"
+                )
+            select_cols = ", ".join(f"`{c}`" for c in _MANIFEST_COLS if c in cols)
+            rows = [dict(r) for r in conn.execute(text(
+                f"SELECT {select_cols} FROM {_MANIFEST_DB}.{_MANIFEST_TABLE} ORDER BY name"
+            )).mappings()]
+    except ManifestError:
+        raise
     except Exception as e:
         raise ManifestError(
             f"云端元表不可读: {e}\n"
