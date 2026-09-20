@@ -12,18 +12,19 @@ from __future__ import annotations
 
 import re
 
-_INT_FAMILY = ("tinyint", "smallint", "mediumint", "int", "integer", "bigint")
-_INT_RE = re.compile(r"^(tinyint|smallint|mediumint|int|integer|bigint)\s*\(\s*\d+\s*\)?\s*(.*)$", re.I)
+_INT_RE = re.compile(r"^(tinyint|smallint|mediumint|int|integer|bigint)\b(.*)$", re.I)
+_WIDTH_RE = re.compile(r"^\s*\(\s*\d+\s*\)\s*")
 _WS_RE = re.compile(r"\s+")
 
 
 def normalize_type(sql_type: str) -> str:
-    """归一化类型串：整数族剥显示宽度，其余仅小写与空白折叠。"""
+    """归一化类型串：整数族统一名称并剥显示宽度（有无括号都要处理），其余小写归一。"""
     t = _WS_RE.sub(" ", (sql_type or "").strip()).lower()
     m = _INT_RE.match(t)
     if m:
-        family, rest = m.group(1).lower(), m.group(2).strip()
+        family = m.group(1).lower()
         family = "int" if family == "integer" else family
+        rest = _WIDTH_RE.sub("", m.group(2))  # 剥 (11) 显示宽度，保留 unsigned/zerofill
         return _WS_RE.sub(" ", f"{family} {rest}").strip()
     return t
 

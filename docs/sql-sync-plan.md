@@ -110,8 +110,8 @@
 | migra / sqlalchemy-diff | 活跃 | ✗ **仅支持 PostgreSQL** |
 | MySQL Utilities（mysqldbcompare） | 2020 归档 | ✗ 依赖旧 Python，弃维 |
 | Liquibase diff | 活跃 | ✗ 引入 JVM 与 XML 生态，重 |
-| **alembic `autogenerate.compare_metadata`**（SQLAlchemy 反射） | 活跃（Alembic BSD） | ✅ **采用为比对引擎**：程序化调用（无需 Alembic 迁移目录），产出变更 op 列表，再编译为 MySQL DDL |
-| 纯自研 INFORMATION_SCHEMA 比对 | — | 作为**归一化/补齐层**（处理 alembic 盲区：显示宽度、零填充、字符集归一、注释、索引细粒度变更） |
+| **alembic `autogenerate.compare_metadata`**（SQLAlchemy 反射） | 活跃（Alembic BSD） | ⚠️ 降级为**可选交叉校验**（2026-09-20 实施决策：M1 归一化指纹层已确定性消噪，主路径直接用指纹 diff + MySQL 方言编译 DDL，避免 alembic op 编译链的不确定性；沙箱 roundtrip 验收通过） |
+| 纯自研 INFORMATION_SCHEMA 比对 | — | ✅ **实际主路径**：normalize 指纹比较 + SQLAlchemy MySQL 方言编译（显示宽度剥离、unsigned 检出、全量反引号引用均已覆盖） |
 
 **已知保真缺口与对策**（选型的核心风险面）：
 
