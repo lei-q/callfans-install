@@ -81,6 +81,19 @@ class TableRule:
         )
 
 
+# 云端标准库连接（2026-09-21 决策：写死在代码，不维护在配置文件；
+# 仅库名 CLOUD_DB_NAME 仍从 .env 读取，TLS CA 可选）
+_CLOUD_DEFAULT = DbTarget(
+    host="47.87.66.98", port=13322,
+    user="client_sync", password="Admin@123", database="",
+)
+
+# B 库账号默认值（与主配置一致，.env 可不填）
+_DEFAULT_MYSQL_HOST = "127.0.0.1"
+_DEFAULT_MYSQL_USER = "root"
+_DEFAULT_MYSQL_PASSWORD = "callfans@123"
+
+
 @dataclass
 class CloudSyncConfig:
     cloud: DbTarget
@@ -91,18 +104,16 @@ class CloudSyncConfig:
     @classmethod
     def from_env(cls) -> "CloudSyncConfig":
         cloud = DbTarget(
-            host=_env("CLOUD_DB_HOST", ""),
-            port=int(_env("CLOUD_DB_PORT", "3306")),
-            user=_env("CLOUD_DB_USER", ""),
-            password=_env("CLOUD_DB_PASSWORD", ""),
+            host=_CLOUD_DEFAULT.host, port=_CLOUD_DEFAULT.port,
+            user=_CLOUD_DEFAULT.user, password=_CLOUD_DEFAULT.password,
             database=_env("CLOUD_DB_NAME", ""),
             ca=_env("CLOUD_DB_CA"),
         )
         local = DbTarget(
-            host=_env("MYSQL_HOST", ""),
+            host=_env("MYSQL_HOST", _DEFAULT_MYSQL_HOST),
             port=int(_env("MYSQL_PORT", "3306")),
-            user=_env("MYSQL_USER", ""),
-            password=_env("MYSQL_PASSWORD", ""),
+            user=_env("MYSQL_USER", _DEFAULT_MYSQL_USER),
+            password=_env("MYSQL_PASSWORD", _DEFAULT_MYSQL_PASSWORD),
             database=_env("MYSQL_DATABASE", ""),
             ca=_env("MYSQL_CA"),
         )
@@ -111,7 +122,7 @@ class CloudSyncConfig:
         if missing:
             raise SyncConfigError(
                 f"sqlsync 配置缺失: {', '.join(missing)}"
-                "（注意 Q9 后 MYSQL_DATABASE 兼作 B 库名，必填）"
+                "（云端连接已内置于程序，仅需配置标准库名 CLOUD_DB_NAME 与 B 库名 MYSQL_DATABASE）"
             )
         policy = SyncPolicy(
             max_statements=int(_env("SQLSYNC_MAX_STATEMENTS", "200")),

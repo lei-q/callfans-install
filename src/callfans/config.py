@@ -7,7 +7,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-_REQUIRED = ("HARBOR_API_URL", "HARBOR_PROJECT", "HARBOR_USERNAME", "HARBOR_PASSWORD")
+_REQUIRED = ("HARBOR_API_URL", "HARBOR_PROJECT")
+
+# 账号类默认值（2026-09-21 决策：.env 可不填，代码兜底）
+_DEFAULT_HARBOR_USER = "admin"
+_DEFAULT_HARBOR_PASSWORD = "Callfans@123"
+_DEFAULT_MYSQL_HOST = "127.0.0.1"
+_DEFAULT_MYSQL_USER = "root"
+_DEFAULT_MYSQL_PASSWORD = "callfans@123"
 
 
 class ConfigError(Exception):
@@ -58,16 +65,16 @@ class Config:
         cfg = cls(
             harbor_api_url=_get("HARBOR_API_URL").rstrip("/"),
             harbor_project=_get("HARBOR_PROJECT"),
-            harbor_username=_get("HARBOR_USERNAME"),
-            harbor_password=_get("HARBOR_PASSWORD"),
+            harbor_username=_get("HARBOR_USERNAME", _DEFAULT_HARBOR_USER),
+            harbor_password=_get("HARBOR_PASSWORD", _DEFAULT_HARBOR_PASSWORD),
             check_interval_hours=float(_get("CHECK_INTERVAL_HOURS", "6")),
             tag_exclude=[t.strip() for t in _get("TAG_EXCLUDE", "latest,dev").split(",") if t.strip()],
             compose_file=Path(p) if (p := _get("COMPOSE_FILE")) else None,
             frontend_output_dir=Path(p) if (p := _get("FRONTEND_OUTPUT_DIR")) else None,
-            mysql_host=_get("MYSQL_HOST"),
+            mysql_host=_get("MYSQL_HOST", _DEFAULT_MYSQL_HOST),
             mysql_port=int(_get("MYSQL_PORT", "3306")),
-            mysql_user=_get("MYSQL_USER"),
-            mysql_password=_get("MYSQL_PASSWORD"),
+            mysql_user=_get("MYSQL_USER", _DEFAULT_MYSQL_USER),
+            mysql_password=_get("MYSQL_PASSWORD", _DEFAULT_MYSQL_PASSWORD),
             mysql_database=_get("MYSQL_DATABASE"),
             health_wait_seconds=int(_get("HEALTH_WAIT_SECONDS", "60")),
             docker_stop_timeout=int(_get("DOCKER_STOP_TIMEOUT", "15")),

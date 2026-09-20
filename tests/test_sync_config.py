@@ -8,9 +8,6 @@ from callfans.core.sync.config import (
 
 
 def _set_env(monkeypatch, **kv):
-    monkeypatch.setenv("CLOUD_DB_HOST", "cloud.example.com")
-    monkeypatch.setenv("CLOUD_DB_USER", "ro")
-    monkeypatch.setenv("CLOUD_DB_PASSWORD", "pw")
     monkeypatch.setenv("CLOUD_DB_NAME", "std")
     monkeypatch.setenv("MYSQL_HOST", "127.0.0.1")
     monkeypatch.setenv("MYSQL_USER", "rw")
@@ -26,10 +23,25 @@ def _set_env(monkeypatch, **kv):
 def test_from_env_defaults(monkeypatch):
     _set_env(monkeypatch)
     cfg = CloudSyncConfig.from_env()
-    assert cfg.cloud.host == "cloud.example.com" and cfg.cloud.ca is None
+    # 云端连接写死于代码（2026-09-21），仅库名走 .env
+    assert cfg.cloud.host == "47.87.66.98"
+    assert cfg.cloud.port == 13322
+    assert cfg.cloud.user == "client_sync"
+    assert cfg.cloud.database == "std" and cfg.cloud.ca is None
     assert cfg.local.database == "biz"
     assert cfg.policy == SyncPolicy()  # 已确认的护栏默认值
     assert cfg.interval_hours == 6.0
+
+
+def test_from_env_local_account_defaults(monkeypatch):
+    """B 库账号可不填：默认 127.0.0.1 / root / callfans@123。"""
+    monkeypatch.setenv("CLOUD_DB_NAME", "std")
+    monkeypatch.setenv("MYSQL_DATABASE", "biz")
+    for k in ("MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_PORT"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = CloudSyncConfig.from_env()
+    assert (cfg.local.host, cfg.local.port, cfg.local.user,
+            cfg.local.password) == ("127.0.0.1", 3306, "root", "callfans@123")
 
 
 def test_from_env_policy_overrides(monkeypatch):
@@ -43,8 +55,8 @@ def test_from_env_policy_overrides(monkeypatch):
 
 
 def test_from_env_missing_keys(monkeypatch):
-    _set_env(monkeypatch, CLOUD_DB_HOST=None, MYSQL_DATABASE=None)
-    with pytest.raises(SyncConfigError, match="CLOUD_DB_HOST"):
+    _set_env(monkeypatch, CLOUD_DB_NAME=None, MYSQL_DATABASE=None)
+    with pytest.raises(SyncConfigError, match="CLOUD_DB_NAME"):
         CloudSyncConfig.from_env()
 
 
