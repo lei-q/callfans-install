@@ -42,6 +42,7 @@ jobs:
       - run: $env:QT_QPA_PLATFORM="offscreen"; .venv\Scripts\python.exe -m pytest -q
       - run: .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm installer/service.spec
       - run: .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm installer/gui.spec
+      - run: .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm installer/cli.spec
       - name: Inno Setup
         shell: cmd
         run: |

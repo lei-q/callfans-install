@@ -128,7 +128,6 @@ def test_update_merges_sqlsync_then_artifacts(monkeypatch):
 
 def test_check_includes_sqlsync_drift(monkeypatch):
     """检查按钮对数据库漂移可见（2026-09-21 补）：有漂移进待更新列表。"""
-    from callfans.core.sync.plan import SyncPlan
     from callfans.service import api as api_mod
 
     class FakePlan:
@@ -160,6 +159,34 @@ def test_check_includes_sqlsync_drift(monkeypatch):
         assert [p["type"] for p in pending] == ["sqlsync"]
         assert pending[0]["new"] == "3 条数据库变更"
         assert "mobile_arm_server" in pending[0]["changelog"]
+
+
+def test_check_sqlsync_eval_failure_visible(monkeypatch):
+    """漂移评估失败不静默：以待更新伪条目暴露原因。"""
+    from callfans.service import api as api_mod
+
+    class FakeRuntime:
+        def __init__(self, cfg, on_event=None, **kw):
+            pass
+
+        def build(self):
+            raise RuntimeError("云端元表不可读: table doesn't exist")
+
+    monkeypatch.setattr(api_mod, "SqlSyncRuntime", FakeRuntime)
+
+    class EmptyChecker:
+        def run(self):
+            return UpdatePlan(checked_at="t", pending=[])
+
+    app = create_app(make_cfg(), checker=EmptyChecker(), token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=object())
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/check",
+                           headers={"Authorization": f"Bearer {TOKEN}"})
+        assert resp.status_code == 200
+        pending = resp.json()["pending"]
+        assert pending[0]["new"] == "漂移评估失败"
+        assert "元表不可读" in pending[0]["changelog"]
 
 
 def test_ws_events_broadcast():

@@ -4,7 +4,7 @@
 ; 自启: HKCU Run 注册 callfans-ui（用户级，tech-design 模式 A），UI 再自拉起服务
 
 #define MyAppName "callfans"
-#define MyAppVersion "0.3.3"
+#define MyAppVersion "0.3.4"
 #define MyAppExeName "callfans-ui.exe"
 
 [Setup]
@@ -24,11 +24,37 @@ WizardStyle=modern
 [Files]
 Source: "..\..\dist\callfans-service\*"; DestDir: "{app}\service"; Flags: recursesubdirs ignoreversion
 Source: "..\..\dist\callfans-ui\*"; DestDir: "{app}\ui"; Flags: recursesubdirs ignoreversion
+Source: "..\..\dist\callfans-cli\*"; DestDir: "{app}\cli"; Flags: recursesubdirs ignoreversion
 Source: "..\..\.env.example"; DestDir: "{app}"; DestName: ".env.example"; Flags: ignoreversion onlyifdoesntexist
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
     ValueName: "{#MyAppName}"; ValueData: """{app}\ui\{#MyAppExeName}"""; Flags: uninsdeletevalue
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  // 升级安装先停旧进程，否则安装后跑的仍是旧代码
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /IM callfans-service.exe /F 2>nul',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /IM callfans-ui.exe /F 2>nul',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(1500);
+  Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  // {app}\cli 加入用户 PATH（新开的终端生效）
+  if CurStep = ssPostInstall then
+    Exec(ExpandConstant('{cmd}'),
+         '/C setx PATH "%PATH%;{app}\cli" >nul 2>nul',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\ui\{#MyAppExeName}"
