@@ -186,7 +186,8 @@ class _StubBackup:
     def backup(self, tables, run_id=None):
         from callfans.core.sync.backup import BackupResult
 
-        return BackupResult(run_id=run_id or "r", tables={t: f"bak_{t}" for t in tables})
+        names = [x[1] if isinstance(x, tuple) else x for x in tables]
+        return BackupResult(run_id=run_id or "r", tables={n: f"bak_{n}" for n in names})
 
 
 class _ExecConn:

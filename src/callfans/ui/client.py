@@ -72,6 +72,28 @@ def check() -> dict:
     return _call("POST", "/api/v1/check", timeout=600)
 
 
-def update() -> dict:
-    """触发更新（阻塞至完成，可能数分钟）。"""
-    return _call("POST", "/api/v1/update", timeout=3600)
+def update(items: list[str] | None = None) -> dict:
+    """触发更新（阻塞至完成，可能数分钟）；items=勾选的条目名，None=全部。"""
+    import json as _json
+
+    body = _json.dumps({"items": items}).encode() if items is not None else None
+    try:
+        client = _connect(timeout=5.0)
+    except ServiceUnavailable:
+        raise
+    try:
+        headers = {"Content-Type": "application/json"} if body else None
+        resp = client.post("/api/v1/update", content=body, headers=headers, timeout=3600)
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            detail = e.response.json().get("detail", "")
+        except Exception:
+            pass
+        raise ServiceUnavailable(f"/api/v1/update -> {e.response.status_code}: {detail}") from e
+    except httpx.HTTPError as e:
+        raise ServiceUnavailable(f"/api/v1/update 请求失败: {e}") from e
+    finally:
+        client.close()

@@ -32,13 +32,14 @@ class PendingItem:
     """一条待更新项（UpdatePlan 成员）。"""
 
     name: str                      # Harbor repo 全名，如 callfans/api
-    type: str                      # server / frontend / sql
+    type: str                      # server / frontend / sqlsync
     old: str | None                # 当前版本 tag；None 表示本地未安装
-    new: str | list[str]           # 目标 tag；sql 为升序列表
-    changelog: Any = None          # str；sql 为 {tag: str}
+    new: str | list[str]           # 目标 tag；sqlsync 为描述
+    changelog: Any = None          # str；详情报告
     alias: str | None = None       # 仅 frontend
-    digest_new: str | None = None  # 目标制品 digest（sql 无单一值）
+    digest_new: str | None = None  # 目标制品 digest
     new_pushed_at: str | None = None
+    sql: list[str] | None = None   # 仅 sqlsync：变更 SQL 语句（导出用）
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +51,7 @@ class PendingItem:
             "alias": self.alias,
             "digest_new": self.digest_new,
             "new_pushed_at": self.new_pushed_at,
+            "sql": self.sql,
         }
 
 

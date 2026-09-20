@@ -46,27 +46,33 @@ class BackupResult:
 
 class BackupManager:
     def __init__(self, conn_factory, backup_root: Path):
-        """conn_factory: () -> pymysql 连接（B 库，最小权限）。"""
+        """conn_factory: () -> pymysql 连接（服务器级，不选库）。"""
         self._conn_factory = conn_factory
         self._root = Path(backup_root)
 
     # ---------- 备份 ----------
 
-    def backup(self, tables: list[str], run_id: str | None = None) -> BackupResult:
+    def backup(self, tables: list[tuple[str, str]] | list[str],
+               run_id: str | None = None) -> BackupResult:
+        """tables: [(db, table)] 或兼容旧式 ["table"]（不带库）。"""
+        targets = [t if isinstance(t, tuple) else ("", t) for t in tables]
         run_id = run_id or new_run_id()
         result = BackupResult(run_id=run_id, tables={})
         dump_dir = self._root / run_id
         dump_dir.mkdir(parents=True, exist_ok=True)
         conn = self._conn_factory()
         try:
-            for table in tables:
+            for db, table in targets:
                 t = _ident(table)
+                d = _ident(db) if db else ""
+                fq = f"`{d}`.`{t}`" if d else f"`{t}`"
                 bak = f"_cf_bak_{run_id[:8]}_{t}"[:64]
+                bak_fq = f"`{d}`.`{bak}`" if d else f"`{bak}`"
                 with conn.cursor() as cur:
-                    cur.execute(f"DROP TABLE IF EXISTS `{bak}`")
-                    cur.execute(f"CREATE TABLE `{bak}` LIKE `{t}`")
-                    cur.execute(f"INSERT INTO `{bak}` SELECT * FROM `{t}`")
-                self._dump_table(conn, t, dump_dir / f"{t}.sql")
+                    cur.execute(f"DROP TABLE IF EXISTS {bak_fq}")
+                    cur.execute(f"CREATE TABLE {bak_fq} LIKE {fq}")
+                    cur.execute(f"INSERT INTO {bak_fq} SELECT * FROM {fq}")
+                self._dump_table(conn, db, t, dump_dir / f"{(d + '_') if d else ''}{t}.sql")
                 result.tables[t] = bak
             conn.commit()
         except Exception:
@@ -77,38 +83,42 @@ class BackupManager:
         result.dump_dir = dump_dir
         return result
 
-    def _dump_table(self, conn, table: str, path: Path) -> None:
+    def _dump_table(self, conn, db: str, table: str, path: Path) -> None:
+        fq = f"`{db}`.`{table}`" if db else f"`{table}`"
         rows: list[tuple] = []
         create_stmt = ""
         with conn.cursor() as cur:
-            cur.execute(f"SHOW CREATE TABLE `{table}`")
+            cur.execute(f"SHOW CREATE TABLE {fq}")
             row = cur.fetchone()
             create_stmt = row[1] if row else ""
-            cur.execute(f"SELECT * FROM `{table}`")
+            cur.execute(f"SELECT * FROM {fq}")
             rows = cur.fetchall()
-        lines = [f"-- backup of {table}", create_stmt or "-- (no create stmt)", ""]
+        lines = [f"-- backup of {fq}", create_stmt or "-- (no create stmt)", ""]
         for i in range(0, len(rows), _BATCH):
             batch = rows[i:i + _BATCH]
             values = ", ".join(
                 "(" + ", ".join(_literal(v) for v in row) + ")" for row in batch
             )
-            lines.append(f"INSERT INTO `{table}` VALUES {values};")
+            lines.append(f"INSERT INTO {fq} VALUES {values};")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # ---------- 恢复 ----------
 
-    def restore(self, table: str, result: BackupResult) -> None:
-        """优先用 bak 表 RENAME 恢复；无 bak 则回放本地 dump。"""
+    def restore(self, table: str, result: BackupResult, db: str = "") -> None:
+        """优先用 bak 表 RENAME 恢复；无 bak 则报错（走本地 dump 回放）。"""
         t = _ident(table)
+        d = _ident(db) if db else ""
+        fq = f"`{d}`.`{t}`" if d else f"`{t}`"
         conn = self._conn_factory()
         try:
             bak = result.tables.get(t)
             with conn.cursor() as cur:
                 if bak:
-                    cur.execute(f"DROP TABLE IF EXISTS `{t}`")
-                    cur.execute(f"RENAME TABLE `{bak}` TO `{t}`")
+                    bak_fq = f"`{d}`.`{bak}`" if d else f"`{bak}`"
+                    cur.execute(f"DROP TABLE IF EXISTS {fq}")
+                    cur.execute(f"RENAME TABLE {bak_fq} TO {fq}")
                 else:
-                    raise BackupError(f"无 bak 表可恢复 {t}（run {result.run_id}）")
+                    raise BackupError(f"无 bak 表可恢复 {fq}（run {result.run_id}）")
             conn.commit()
         finally:
             conn.close()

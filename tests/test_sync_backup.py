@@ -51,7 +51,7 @@ def test_backup_creates_bak_and_dump(tmp_path):
     mgr = BackupManager(lambda: conn, tmp_path)
     run_id = new_run_id()
 
-    result = mgr.backup(["sys_config"], run_id=run_id)
+    result = mgr.backup([("", "sys_config")], run_id=run_id)
 
     bak = result.tables["sys_config"]
     assert bak.startswith("_cf_bak_") and "sys_config" in bak
@@ -62,7 +62,7 @@ def test_backup_creates_bak_and_dump(tmp_path):
     assert "COMMIT" in joined
     # 本地 dump：建表语句 + 值转义（NULL / 字符串引号）
     dump = (tmp_path / run_id / "sys_config.sql").read_text(encoding="utf-8")
-    assert dump.startswith("-- backup of sys_config")
+    assert dump.startswith("-- backup of `sys_config`")
     assert "CREATE TABLE" in dump
     assert "'a'" in dump and "NULL" in dump
 
@@ -70,15 +70,15 @@ def test_backup_creates_bak_and_dump(tmp_path):
 def test_backup_rejects_bad_identifier(tmp_path):
     mgr = BackupManager(lambda: FakeConn(), tmp_path)
     with pytest.raises(BackupError, match="非法表名"):
-        mgr.backup(["evil; DROP TABLE x"])
+        mgr.backup([("", "evil; DROP TABLE x")])
 
 
 def test_restore_via_rename(tmp_path):
     conn = FakeConn()
     mgr = BackupManager(lambda: conn, tmp_path)
-    result = mgr.backup(["sys_config"], run_id="20260920120000")
+    result = mgr.backup([("", "sys_config")], run_id="20260920120000")
     conn.statements.clear()
-    mgr.restore("sys_config", result)
+    mgr.restore("sys_config", result, db="")
     joined = "\n".join(conn.statements)
     assert "DROP TABLE IF EXISTS `sys_config`" in joined
     assert f"RENAME TABLE `{result.tables['sys_config']}` TO `sys_config`" in joined

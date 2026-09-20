@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import anyio
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -230,12 +230,15 @@ def create_app(
         return {"lines": _tail_lines(log_file(), n)}
 
     @app.post("/api/v1/update")
-    async def update() -> dict:
+    async def update(payload: dict | None = Body(default=None)) -> dict:
         if state.updating or state.busy:
             raise HTTPException(status_code=409, detail="check or update in progress")
+        selected = None
+        if payload and isinstance(payload.get("items"), list):
+            selected = set(payload["items"])  # 按名称勾选更新（None=全部）
         state.updating = True
         try:
-            report = await anyio.to_thread.run_sync(_run_update_sync)
+            report = await anyio.to_thread.run_sync(_run_update_sync, selected)
             return report
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
@@ -243,7 +246,7 @@ def create_app(
             state.updating = False
 
     def _sqlsync_drift_item():
-        """只读评估数据库漂移；无差异返回 None，有则返回待更新伪条目。"""
+        """只读评估数据库漂移；无差异返回 None，有则返回待更新伪条目（含变更 SQL）。"""
         from ..core.models import PendingItem
 
         runtime = SqlSyncRuntime(sqlsync_cfg)
@@ -254,6 +257,7 @@ def create_app(
         return PendingItem(
             name="(sqlsync)", type="sqlsync", old=None,
             new=f"{n} 条数据库变更", changelog=plan.report_text(),
+            sql=plan.up_statements(),
         )
 
     def _sqlsync_item(result: str, error, status: str = "", run_id: str = "") -> dict:
@@ -273,12 +277,16 @@ def create_app(
         })
         return report
 
-    def _run_update_sync() -> dict:
-        """更新链路：sqlsync → server → 前端（Q9 后 SQL 由同步域承担）。"""
+    def _run_update_sync(selected=None) -> dict:
+        """更新链路：sqlsync → server → 前端（Q9 后 SQL 由同步域承担）。
+
+        selected：勾选的条目名称集合；None = 全部。sqlsync 伪条目名 "(sqlsync)"。
+        """
         items: list[dict] = []
         summary = {"success": 0, "failed": 0, "rolled_back": 0}
+        run_sqlsync = sqlsync_cfg is not None and (selected is None or "(sqlsync)" in selected)
 
-        if sqlsync_cfg is not None:
+        if run_sqlsync:
             emit("update_progress", {"item": "(sqlsync)", "type": "sqlsync", "stage": "start"})
             try:
                 rep = _run_sqlsync_once()
@@ -291,6 +299,8 @@ def create_app(
             emit("update_progress", {"item": "(sqlsync)", "stage": "done", "record": items[-1]})
 
         plan = checker.run()
+        if selected is not None:
+            plan.pending = [p for p in plan.pending if p.name in selected]
         runner = UpdateRunner(cfg, state=getattr(checker, "state", None), on_event=emit)
         report = runner.run(plan)
         for key in summary:

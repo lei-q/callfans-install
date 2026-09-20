@@ -31,9 +31,10 @@ def pymysql_factory(target: DbTarget):
 
         kwargs = {
             "host": target.host, "port": target.port,
-            "user": target.user, "password": target.password,
-            "database": target.database, "charset": "utf8mb4",
+            "user": target.user, "password": target.password, "charset": "utf8mb4",
         }
+        if target.database:
+            kwargs["database"] = target.database
         if target.ca:
             kwargs["ssl"] = {"ca": target.ca}
         return pymysql.connect(**kwargs)

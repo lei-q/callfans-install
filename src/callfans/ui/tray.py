@@ -31,7 +31,7 @@ class TrayController:
     def __init__(self, window: MainWindow):
         self.window = window
         self.icon = QSystemTrayIcon(_make_icon())
-        self.icon.setToolTip("callfans 更新器")
+        self.icon.setToolTip("callfans 管家")
         menu = QMenu()
         act_show = QAction("打开主窗口")
         act_check = QAction("检查更新")

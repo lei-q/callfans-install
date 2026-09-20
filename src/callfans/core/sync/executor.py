@@ -81,9 +81,10 @@ class SqlSyncExecutor:
             return report
 
         # G1：备份失败绝不执行（不可关）
-        self.on_event("sqlsync_progress", {"stage": "backup", "tables": sorted(plan.affected_tables)})
+        targets = plan.backup_targets
+        self.on_event("sqlsync_progress", {"stage": "backup", "tables": [f"{d}.{t}" for d, t in targets]})
         try:
-            backup_result = self.backup.backup(sorted(plan.affected_tables), run_id=report.run_id)
+            backup_result = self.backup.backup(targets, run_id=report.run_id)
             report.backup_tables = backup_result.tables
         except Exception as e:
             report.status = "backup_failed"

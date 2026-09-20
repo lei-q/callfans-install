@@ -57,6 +57,11 @@ class SyncPolicy:
     max_delete_rows: int = 1000    # G4：单表 DELETE 行数上限
     max_rows_per_table: int = 1_000_000  # 超限仅比结构不比数据
     no_pk_tables: str = "skip_warn"      # error | skip_warn
+    exclude_dbs: list[str] = field(default_factory=list)  # 多库排除名单
+
+
+def _csv(v: str) -> list[str]:
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
 
 
 @dataclass
@@ -65,6 +70,7 @@ class TableRule:
     data: bool = True
     pk: str | None = None
     ignore_columns: list[str] = field(default_factory=list)
+    db: str | None = None  # 限定库；None = 适用所有库（表存在才生效）
 
     @classmethod
     def from_manifest_row(cls, row: dict) -> "TableRule":
@@ -78,6 +84,7 @@ class TableRule:
             data=bool(row.get("data_sync", 1)),
             pk=(str(row["pk"]).strip() or None) if row.get("pk") else None,
             ignore_columns=_csv(row.get("ignore_columns")),
+            db=(str(row["db"]).strip() or None) if row.get("db") else None,
         )
 
 
@@ -106,7 +113,7 @@ class CloudSyncConfig:
         cloud = DbTarget(
             host=_CLOUD_DEFAULT.host, port=_CLOUD_DEFAULT.port,
             user=_CLOUD_DEFAULT.user, password=_CLOUD_DEFAULT.password,
-            database=_env("CLOUD_DB_NAME", ""),
+            database=_env("CLOUD_DB_NAME", ""),  # 空 = 多库自动发现（2026-09-21）
             ca=_env("CLOUD_DB_CA"),
         )
         local = DbTarget(
@@ -114,22 +121,16 @@ class CloudSyncConfig:
             port=int(_env("MYSQL_PORT", "3306")),
             user=_env("MYSQL_USER", _DEFAULT_MYSQL_USER),
             password=_env("MYSQL_PASSWORD", _DEFAULT_MYSQL_PASSWORD),
-            database=_env("MYSQL_DATABASE", ""),
+            database="",  # B 库名与云库同名，不再单独配置
             ca=_env("MYSQL_CA"),
         )
-        missing = ["CLOUD_DB_NAME" for _ in cloud.missing_keys()]
-        missing += [f"MYSQL_{k.upper()}" for k in local.missing_keys()]
-        if missing:
-            raise SyncConfigError(
-                f"sqlsync 配置缺失: {', '.join(sorted(set(missing)))}"
-                "（云端连接已内置于程序，仅需配置标准库名 CLOUD_DB_NAME 与 B 库名 MYSQL_DATABASE）"
-            )
         policy = SyncPolicy(
             max_statements=int(_env("SQLSYNC_MAX_STATEMENTS", "200")),
             max_table_ratio=float(_env("SQLSYNC_MAX_TABLE_RATIO", "0.30")),
             max_delete_rows=int(_env("SQLSYNC_MAX_DELETE_ROWS", "1000")),
             max_rows_per_table=int(_env("SQLSYNC_MAX_ROWS_PER_TABLE", "1000000")),
             no_pk_tables=_env("SQLSYNC_NO_PK_TABLES", "skip_warn"),
+            exclude_dbs=_csv(_env("SQLSYNC_EXCLUDE_DBS", "")),  # 多库模式排除名单
         )
         if policy.max_statements < 1 or not (0 < policy.max_table_ratio <= 1):
             raise SyncConfigError("SQLSYNC_* 护栏阈值非法")

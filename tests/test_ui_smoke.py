@@ -34,8 +34,8 @@ def test_window_fills_table_and_changelog(qapp):
          )),
     )
     assert w.table.rowCount() == 2
-    assert w.table.item(0, 3).text() == "b"
-    assert w.table.item(1, 3).text() == "s1 → s2"  # sql 多版本列表展示
+    assert w.table.item(0, 4).text() == "b"
+    assert w.table.item(1, 4).text() == "s1 → s2"  # sql 多版本列表展示
     assert w.btn_update.isEnabled()
     w.table.selectRow(1)
     assert "加表" in w.changelog_view.toPlainText()

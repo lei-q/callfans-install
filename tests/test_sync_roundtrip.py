@@ -35,14 +35,14 @@ CLOUD_DDL = [
 
 # 本地现状：sys_config 缺 remark/idx_label 且 label 是 128；sys_dict 整表缺失；sys_old 多余
 LOCAL_DDL = [
-    "CREATE DATABASE IF NOT EXISTS biz",
-    """CREATE TABLE biz.sys_config(
+    "CREATE DATABASE IF NOT EXISTS std",
+    """CREATE TABLE std.sys_config(
         id INT NOT NULL AUTO_INCREMENT,
         k VARCHAR(64) NOT NULL,
         label VARCHAR(128) NOT NULL,
         PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
-    "CREATE TABLE biz.sys_old(id INT NOT NULL PRIMARY KEY)",
+    "CREATE TABLE std.sys_old(id INT NOT NULL PRIMARY KEY)",
 ]
 
 
@@ -115,7 +115,7 @@ def test_roundtrip_diff_apply_rediff_empty(sandbox):
 
     cloud_port, local_port = sandbox
     cloud = engine_for(DbTarget("127.0.0.1", cloud_port, "root", "root", "std"))
-    local = engine_for(DbTarget("127.0.0.1", local_port, "root", "root", "biz"))
+    local = engine_for(DbTarget("127.0.0.1", local_port, "root", "root", "std"))
     manifest = [
         TableRule(name="sys_config", data=True, pk="id"),
         TableRule(name="sys_dict", data=True, pk="code"),
@@ -145,7 +145,7 @@ CLOUD_DATA = [
 ]
 # 本地现状：c1 旧值、c3 多余行；sys_config 已随结构同步建好（空表 → 种子）
 LOCAL_DATA = [
-    "INSERT INTO biz.sys_dict (code, value) VALUES ('c1','OLD'),('c3','local-only')",
+    "INSERT INTO std.sys_dict (code, value) VALUES ('c1','OLD'),('c3','local-only')",
 ]
 
 
@@ -164,7 +164,7 @@ def test_data_roundtrip_plan_apply_replan_empty(sandbox):
 
     cfg = CloudSyncConfig(
         cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std"),
-        local=DbTarget("127.0.0.1", local_port, "root", "root", "biz"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", "std"),
         policy=SyncPolicy(),
     )
     cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
@@ -210,7 +210,7 @@ def test_executor_with_real_backup_and_state(sandbox, tmp_path):
 
     cfg = CloudSyncConfig(
         cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std"),
-        local=DbTarget("127.0.0.1", local_port, "root", "root", "biz"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", "std"),
         policy=SyncPolicy(),
     )
     cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
@@ -220,7 +220,7 @@ def test_executor_with_real_backup_and_state(sandbox, tmp_path):
         import pymysql
 
         return pymysql.connect(host="127.0.0.1", port=local_port, user="root",
-                               password="root", database="biz", charset="utf8mb4")
+                               password="root", database="std", charset="utf8mb4")
 
     state = StateStore(tmp_path / "state.json")
     executor = SqlSyncExecutor(cfg, local, BackupManager(conn_factory, tmp_path / "bak"),
@@ -261,7 +261,7 @@ def test_comment_only_change_roundtrip(sandbox):
     ])
     cfg = CloudSyncConfig(
         cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std"),
-        local=DbTarget("127.0.0.1", local_port, "root", "root", "biz"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", "std"),
         policy=SyncPolicy(),
     )
     cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
@@ -279,4 +279,53 @@ def test_comment_only_change_roundtrip(sandbox):
 
     again = build_plan(cfg, cloud, local, manifest)
     assert again.statement_count == 0, f"注释 roundtrip 非空: {again.report_text()}"
+
+
+def test_multi_db_roundtrip(sandbox):
+    """多库模式（不配库名）：自动发现 std/std2；B 缺库 → 建库 + 建表 + 种子。"""
+    from sqlalchemy import text
+
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    _exec_sql(cloud_port, [
+        "CREATE DATABASE IF NOT EXISTS std2",
+        """CREATE TABLE std2.province(
+            id INT NOT NULL AUTO_INCREMENT,
+            name VARCHAR(32) NOT NULL,
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "INSERT INTO std2.province (name) VALUES ('广东'),('浙江')",
+    ])
+
+    # 多库模式：cloud.database 留空
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", ""),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
+        policy=SyncPolicy(),
+    )
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    manifest = [
+        TableRule(name="sys_dict", data=True, pk="code"),      # std 里有
+        TableRule(name="province", data=True, pk="id"),         # std2 里有（rule.db=None 适用所有库）
+    ]
+
+    plan = build_plan(cfg, cloud, local, manifest)
+    assert not plan.fatal, plan.report_text()
+    assert plan.databases == ["std", "std2"]                    # 自动发现
+    kinds = {c.kind for c in plan.schema_changes}
+    assert "create_database" in kinds                           # std2 缺库 → 建库
+    create_db = next(c for c in plan.schema_changes if c.kind == "create_database")
+    assert create_db.table == "std2"
+    assert any(c.db == "std2" and c.kind == "add_table" for c in plan.schema_changes)
+    prov = next(d for d in plan.data_tables if d.table == "province")
+    assert prov.inserts == 2                                    # 种子数据
+
+    with local.begin() as conn:
+        for stmt in plan.up_statements():
+            conn.execute(text(stmt))
+
+    again = build_plan(cfg, cloud, local, manifest)
+    assert again.statement_count == 0, f"多库 roundtrip 非空:\n{again.report_text()}"
 

@@ -12,7 +12,6 @@ def _set_env(monkeypatch, **kv):
     monkeypatch.setenv("MYSQL_HOST", "127.0.0.1")
     monkeypatch.setenv("MYSQL_USER", "rw")
     monkeypatch.setenv("MYSQL_PASSWORD", "pw2")
-    monkeypatch.setenv("MYSQL_DATABASE", "biz")
     for k, v in kv.items():
         if v is None:
             monkeypatch.delenv(k, raising=False)
@@ -23,20 +22,28 @@ def _set_env(monkeypatch, **kv):
 def test_from_env_defaults(monkeypatch):
     _set_env(monkeypatch)
     cfg = CloudSyncConfig.from_env()
-    # 云端连接写死于代码（2026-09-21），仅库名走 .env
+    # 云端连接写死于代码（2026-09-21）；配 CLOUD_DB_NAME=单库模式
     assert cfg.cloud.host == "47.87.66.98"
     assert cfg.cloud.port == 13322
     assert cfg.cloud.user == "client_sync"
     assert cfg.cloud.database == "std" and cfg.cloud.ca is None
-    assert cfg.local.database == "biz"
+    assert cfg.local.database == ""  # B 库名与云库同名，不再单独配置
     assert cfg.policy == SyncPolicy()  # 已确认的护栏默认值
     assert cfg.interval_hours == 6.0
+
+
+def test_multi_db_mode_when_no_cloud_db_name(monkeypatch):
+    """不配 CLOUD_DB_NAME → 多库自动发现；排除名单可配。"""
+    monkeypatch.delenv("CLOUD_DB_NAME", raising=False)
+    monkeypatch.setenv("SQLSYNC_EXCLUDE_DBS", " tmp_x, audit ")
+    cfg = CloudSyncConfig.from_env()
+    assert cfg.cloud.database == ""  # 多库模式
+    assert cfg.policy.exclude_dbs == ["tmp_x", "audit"]
 
 
 def test_from_env_local_account_defaults(monkeypatch):
     """B 库账号可不填：默认 127.0.0.1 / root / callfans@123。"""
     monkeypatch.setenv("CLOUD_DB_NAME", "std")
-    monkeypatch.setenv("MYSQL_DATABASE", "biz")
     for k in ("MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_PORT"):
         monkeypatch.delenv(k, raising=False)
     cfg = CloudSyncConfig.from_env()
@@ -54,9 +61,9 @@ def test_from_env_policy_overrides(monkeypatch):
             cfg.policy.max_delete_rows) == (50, 0.5, 10)
 
 
-def test_from_env_missing_keys(monkeypatch):
-    _set_env(monkeypatch, CLOUD_DB_NAME=None, MYSQL_DATABASE=None)
-    with pytest.raises(SyncConfigError, match="CLOUD_DB_NAME"):
+def test_from_env_invalid_policy_still_raises(monkeypatch):
+    _set_env(monkeypatch, SQLSYNC_MAX_STATEMENTS="0")
+    with pytest.raises(SyncConfigError, match="阈值非法"):
         CloudSyncConfig.from_env()
 
 

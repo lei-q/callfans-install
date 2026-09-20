@@ -43,7 +43,8 @@ class StubBackup:
         self.calls.append(list(tables))
         if self.error:
             raise self.error
-        return BackupResult(run_id=run_id or "r", tables={t: f"bak_{t}" for t in tables})
+        names = [t[1] if isinstance(t, tuple) else t for t in tables]
+        return BackupResult(run_id=run_id or "r", tables={n: f"bak_{n}" for n in names})
 
 
 def _plan(violations=(), schema=(), data_tables=(), checksum="cs1"):

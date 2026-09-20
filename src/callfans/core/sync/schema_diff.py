@@ -16,6 +16,7 @@ from sqlalchemy.schema import CreateColumn, CreateIndex, CreateTable, DropIndex,
 
 from .config import TableRule
 from .normalize import column_fingerprint, index_fingerprint, table_fingerprint
+from .reflect import lookup_table
 
 _DIALECT = mysql.dialect()
 
@@ -39,6 +40,11 @@ class SchemaChange:
     destructive: bool = False
     detail: str = ""
     down_ddl: str = ""  # 逆操作（drop_table/drop_column 数据恢复依赖备份）
+    db: str = ""        # 多库模式：所属库（空 = 单库兼容）
+
+    @property
+    def fq(self) -> str:
+        return f"{self.db}.{self.table}" if self.db else self.table
 
 
 @dataclass
@@ -71,6 +77,11 @@ def _quote(name: str) -> str:
     return f"`{name}`"
 
 
+def _tq(db: str | None, name: str) -> str:
+    """库名限定的表引用（多库模式）。"""
+    return f"`{db}`.`{name}`" if db else f"`{name}`"
+
+
 def _col_ddl(col) -> str:
     return str(CreateColumn(col).compile(dialect=_DIALECT))
 
@@ -99,15 +110,21 @@ def _force_quote(md) -> None:
 
 
 def diff_schemas(cloud_md, local_md, manifest: list[TableRule],
-                 ignore_indexes: list[str] | None = None) -> SchemaDiffResult:
-    """云库（期望）vs B 库（现状）→ 有序变更列表。"""
+                 ignore_indexes: list[str] | None = None,
+                 db: str | None = None) -> SchemaDiffResult:
+    """云库（期望）vs B 库（现状）→ 有序变更列表。
+
+    db：多库模式的当前库名（反射带 schema 时元数据键为 'db.name'）；
+    清单行按 rule.db 过滤（None = 适用所有库）。
+    """
     _force_quote(cloud_md)
     _force_quote(local_md)
     result = SchemaDiffResult()
     ignore_idx = set(ignore_indexes or [])
-    for rule in manifest:
-        cloud_t = cloud_md.tables.get(rule.name)
-        local_t = local_md.tables.get(rule.name)
+    rules = [r for r in manifest if r.db in (None, "") or r.db == db]
+    for rule in rules:
+        cloud_t = lookup_table(cloud_md, db, rule.name)
+        local_t = lookup_table(local_md, db, rule.name)
         if cloud_t is None:
             continue  # 云库缺表由 G3 在更早阶段拦截
         if local_t is None:
@@ -115,26 +132,31 @@ def diff_schemas(cloud_md, local_md, manifest: list[TableRule],
             result.changes.append(SchemaChange(
                 "add_table", rule.name, create_ddl,
                 detail="含主键；二级索引随后单独建",
-                down_ddl=f"DROP TABLE IF EXISTS {_quote(rule.name)};",
+                down_ddl=f"DROP TABLE IF EXISTS {_tq(db, rule.name)};",
+                db=db or "",
             ))
             for idx in sorted(cloud_t.indexes, key=lambda i: i.name or ""):
-                result.changes.append(_index_change("add_index", rule.name, idx))
+                result.changes.append(_index_change("add_index", rule.name, idx, db=db))
             continue
-        _diff_table(result, rule, cloud_t, local_t, ignore_idx)
+        _diff_table(result, rule, cloud_t, local_t, ignore_idx, db=db)
     # B 库多出的清单表 → 删除（破坏性；不在清单里的表不碰）
-    manifest_names = {r.name for r in manifest}
-    for name in sorted(manifest_names & set(local_md.tables.keys()) - set(cloud_md.tables.keys())):
+    manifest_names = {r.name for r in rules}
+    local_keys = {k.split(".", 1)[-1] for k in local_md.tables.keys()}
+    cloud_keys = {k.split(".", 1)[-1] for k in cloud_md.tables.keys()}
+    for name in sorted(manifest_names & local_keys - cloud_keys):
+        local_t = lookup_table(local_md, db, name)
         result.changes.append(SchemaChange(
             "drop_table", name,
-            str(DropTable(local_md.tables[name]).compile(dialect=_DIALECT)),
+            str(DropTable(local_t).compile(dialect=_DIALECT)),
             destructive=True,
             down_ddl=f"-- {name} 表数据恢复依赖备份回灌",
+            db=db or "",
         ))
     return result
 
 
 def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
-                ignore_idx: set[str]) -> None:
+                ignore_idx: set[str], db: str | None = None) -> None:
     ignored = set(rule.ignore_columns)
     # ---- 列 ----
     cloud_cols = {c.name: c for c in cloud_t.columns if c.name not in ignored}
@@ -143,8 +165,9 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
         if name not in local_cols:
             result.changes.append(SchemaChange(
                 "add_column", rule.name,
-                f"ALTER TABLE {_quote(rule.name)} ADD COLUMN {_col_ddl(col)}",
-                down_ddl=f"ALTER TABLE {_quote(rule.name)} DROP COLUMN {_quote(name)};",
+                f"ALTER TABLE {_tq(db, rule.name)} ADD COLUMN {_col_ddl(col)}",
+                down_ddl=f"ALTER TABLE {_tq(db, rule.name)} DROP COLUMN {_quote(name)};",
+                db=db or "",
             ))
         elif column_fingerprint(col) != column_fingerprint(local_cols[name]):
             c_fp = column_fingerprint(col)
@@ -162,18 +185,19 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
                 detail.append(f"注释 {l_cmt!r}→{c_cmt!r}")
             result.changes.append(SchemaChange(
                 "modify_column", rule.name,
-                f"ALTER TABLE {_quote(rule.name)} MODIFY COLUMN {_col_ddl(col)}",
+                f"ALTER TABLE {_tq(db, rule.name)} MODIFY COLUMN {_col_ddl(col)}",
                 detail="，".join(detail) or "指纹差异",
-                down_ddl=f"ALTER TABLE {_quote(rule.name)} MODIFY COLUMN "
+                down_ddl=f"ALTER TABLE {_tq(db, rule.name)} MODIFY COLUMN "
                          f"{_col_ddl(local_cols[name])};",
+                db=db or "",
             ))
     for name in sorted(set(local_cols) - set(cloud_cols)):
         result.changes.append(SchemaChange(
             "drop_column", rule.name,
-            f"ALTER TABLE {_quote(rule.name)} DROP COLUMN {_quote(name)}",
-            destructive=True,
+            f"ALTER TABLE {_tq(db, rule.name)} DROP COLUMN {_quote(name)}",
+            destructive=True, db=db or "",
             detail="列数据恢复依赖备份",
-            down_ddl=f"ALTER TABLE {_quote(rule.name)} ADD COLUMN "
+            down_ddl=f"ALTER TABLE {_tq(db, rule.name)} ADD COLUMN "
                      f"{_col_ddl(local_cols[name])};",
         ))
     # ---- 二级索引 ----（含忽略列的索引跳过；ignore_idx 名单跳过）
@@ -214,14 +238,15 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
         if parts:
             result.changes.append(SchemaChange(
                 "change_pk", rule.name,
-                f"ALTER TABLE {_quote(rule.name)} " + ", ".join(parts),
+                f"ALTER TABLE {_tq(db, rule.name)} " + ", ".join(parts),
                 destructive=True,
                 detail=f"{local_pk or '无'}→{cloud_pk or '无'}",
-                down_ddl=f"ALTER TABLE {_quote(rule.name)} " + ", ".join(down_parts) + ";",
+                down_ddl=f"ALTER TABLE {_tq(db, rule.name)} " + ", ".join(down_parts) + ";",
             ))
 
 
-def _index_change(kind: str, table: str, idx, destructive: bool = False) -> SchemaChange:
+def _index_change(kind: str, table: str, idx, destructive: bool = False,
+                  db: str | None = None) -> SchemaChange:
     if kind == "add_index":
         ddl = str(CreateIndex(idx).compile(dialect=_DIALECT))
         down = str(DropIndex(idx).compile(dialect=_DIALECT))
@@ -230,4 +255,4 @@ def _index_change(kind: str, table: str, idx, destructive: bool = False) -> Sche
         down = str(CreateIndex(idx).compile(dialect=_DIALECT))
     cols = ", ".join(c.name for c in idx.columns)
     return SchemaChange(kind, table, ddl + ";", destructive=destructive, detail=cols,
-                        down_ddl=down + ";")
+                        down_ddl=down + ";", db=db or "")

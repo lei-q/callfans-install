@@ -81,18 +81,66 @@ class TestGuards:
         assert "G5：云库表为空" in plan.report_text()
 
 
-def test_checksum_determinism():
-    """同结构同数据 → 校验和稳定；结构变化 → 校验和变化。"""
-    from callfans.core.sync.plan import _cloud_checksum
+def test_checksum_covers_databases():
+    """校验和包含库与表集合（多库维度）。"""
+    from callfans.core.sync.plan import _checksum
 
-    def md_with(label_len=64):
-        md = MetaData()
-        Table("sys_config", md, Column("id", Integer, primary_key=True),
-              Column("label", String(label_len)))
-        return md
+    class _Eng:
+        def __init__(self, tables):
+            self._tables = tables
 
-    tables = [_data_table("sys_config", cloud_rows=5)]
-    assert _cloud_checksum(md_with(), tables) == _cloud_checksum(md_with(), tables)
-    assert _cloud_checksum(md_with(), tables) != _cloud_checksum(md_with(128), tables)
-    assert _cloud_checksum(md_with(), tables) != _cloud_checksum(
-        md_with(), [_data_table("sys_config", cloud_rows=6)])
+        def connect(self):
+            class _C:
+                def __init__(self, tables):
+                    self._tables = tables
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def execute(self, sql, params=None):
+                    class _R:
+                        def __init__(self, rows):
+                            self._rows = rows
+
+                        def fetchall(self):
+                            return self._rows
+
+                    db = params.get("db") if params else "std"
+                    return _R([(t,) for t in self._tables.get(db, [])])
+
+            return _C(self._tables)
+            class _C:
+                def __init__(self, tables):
+                    self._tables = tables
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def execute(self, sql, params=None):
+                    class _R:
+                        def __init__(self, rows):
+                            self._rows = rows
+
+                        def fetchall(self):
+                            return self._rows
+
+                    db = params.get("db") if params else "std"
+                    return _R([(t,) for t in self._tables.get(db, [])])
+
+            return _C(self._tables)
+
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget
+    cfg = CloudSyncConfig(cloud=DbTarget("c", 1, "u", "p", "std"),
+                          local=DbTarget("l", 2, "u", "p", ""))
+    e = _Eng({"std": ["t1", "t2"]})
+    h1 = _checksum(cfg, ["std"], e, [])
+    h2 = _checksum(cfg, ["std"], e, [])
+    e2 = _Eng({"std": ["t1", "t2"], "biz2": ["u1"]})
+    h3 = _checksum(cfg, ["std", "biz2"], e2, [])
+    assert h1 == h2 and h1 != h3

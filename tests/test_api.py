@@ -12,13 +12,15 @@ from callfans.service.api import create_app
 TOKEN = "test-token"
 
 
-def make_cfg():
-    return Config(
+def make_cfg(**kw):
+    base = dict(
         harbor_api_url="https://harbor.example.com",
         harbor_project="callfans",
         harbor_username="u",
         harbor_password="p",
     )
+    base.update(kw)
+    return Config(**base)
 
 
 class StubChecker:
@@ -40,7 +42,8 @@ class StubChecker:
 
 def make_client():
     stub = StubChecker()
-    app = create_app(make_cfg(), checker=stub, token=TOKEN, enable_scheduler=False)
+    app = create_app(make_cfg(), checker=stub, token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=None)
     return TestClient(app), stub
 
 
@@ -136,6 +139,10 @@ def test_check_includes_sqlsync_drift(monkeypatch):
         def report_text(self):
             return "语句总数: 3｜涉及表: 1\n结构: 修改列 mobile_arm_server"
 
+        def up_statements(self):
+            return ["ALTER TABLE `db`.`mobile_arm_server` MODIFY COLUMN `k` varchar(64);",
+                    "ALTER TABLE `db`.`t2` ADD COLUMN `c` int;"]
+
     class FakeRuntime:
         def __init__(self, cfg, on_event=None, **kw):
             pass
@@ -159,6 +166,8 @@ def test_check_includes_sqlsync_drift(monkeypatch):
         assert [p["type"] for p in pending] == ["sqlsync"]
         assert pending[0]["new"] == "3 条数据库变更"
         assert "mobile_arm_server" in pending[0]["changelog"]
+        # #2：详情携带变更 SQL（UI 导出/预览用）
+        assert pending[0]["sql"] and "mobile_arm_server" in pending[0]["sql"][0]
 
 
 def test_check_sqlsync_eval_failure_visible(monkeypatch):
@@ -188,6 +197,43 @@ def test_check_sqlsync_eval_failure_visible(monkeypatch):
         assert pending[0]["new"] == "漂移评估失败"
         assert "元表不可读" in pending[0]["changelog"]
 
+
+
+def test_update_selective_items(tmp_path):
+    """立即更新支持勾选（#3）：只更新 items 指定的条目。"""
+    from callfans.core.models import PendingItem, UpdatePlan
+
+    class StubUpd:
+        def __init__(self):
+            self.updated = []
+
+        def update(self, item):
+            self.updated.append(item.name)
+            return {"name": item.name, "type": item.type, "old": item.old,
+                    "new": item.new, "result": "success", "error": None}
+
+    class Checker2:
+        def run(self):
+            return UpdatePlan(checked_at="t", pending=[
+                PendingItem(name="callfans/api", type="server", old="1", new="2"),
+                PendingItem(name="callfans/web", type="frontend", old="1", new="2"),
+            ])
+
+    app = create_app(make_cfg(frontend_output_dir=tmp_path / "web"),
+                     checker=Checker2(), token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=None)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        resp = client.post("/api/v1/update", headers=headers,
+                           json={"items": ["callfans/web"]})
+        assert resp.status_code == 200
+        report = resp.json()
+        assert [r["name"] for r in report["items"]] == ["callfans/web"]
+        # 勾选 sqlsync 伪条目但未配置 → 不执行不报错
+        resp2 = client.post("/api/v1/update", headers=headers,
+                            json={"items": ["(sqlsync)", "callfans/web"]})
+        names2 = [r["name"] for r in resp2.json()["items"]]
+        assert names2 == ["callfans/web"]
 
 def test_ws_events_broadcast():
     client, stub = make_client()

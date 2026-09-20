@@ -11,7 +11,7 @@ from .config import TableRule
 
 _MANIFEST_DB = "callfans_sync"
 _MANIFEST_TABLE = "tables"
-_MANIFEST_COLS = ("name", "data_sync", "pk", "ignore_columns")
+_MANIFEST_COLS = ("name", "data_sync", "pk", "ignore_columns", "db")
 
 
 class ManifestError(RuntimeError):

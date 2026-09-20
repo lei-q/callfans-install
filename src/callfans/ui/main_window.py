@@ -38,6 +38,7 @@ _STAGE_TEXT = {
     "rollback": "SQL 同步回滚",
 }
 _SPINNER_FRAMES = "|/-\\"
+_MAX_SQL_PREVIEW_LINES = 2000  # 详情面板 SQL 预览上限（超出提示导出）
 
 
 class Worker(QObject):
@@ -74,7 +75,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, poll_enabled: bool = True):
         super().__init__()
-        self.setWindowTitle("callfans 更新器")
+        self.setWindowTitle("callfans 管家")
         self.resize(760, 520)
         self._workers: list[Worker] = []
         self._busy = False  # 检查/更新进行中（退出确认用）
@@ -119,14 +120,17 @@ class MainWindow(QMainWindow):
         self._spinner.timeout.connect(self._tick_spinner)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["类型", "名称", "当前版本", "新版本", "alias"])
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["✓", "类型", "名称", "当前版本", "新版本", "alias"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)  # 可拖动
+        header.setSectionsMovable(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.itemSelectionChanged.connect(
             lambda: self._show_changelog(self.table.currentRow())
         )
+        self.table.itemChanged.connect(self._on_item_changed)
         splitter.addWidget(self.table)
 
         self.changelog_view = QPlainTextEdit()
@@ -146,11 +150,27 @@ class MainWindow(QMainWindow):
         log_header = QHBoxLayout()
         log_header.addWidget(QLabel("进度与结果"))
         log_header.addStretch(1)
+        self.btn_export_sql = QPushButton("导出 SQL")
+        self.btn_export_sql.setToolTip("将选中的数据库变更 SQL 导出为 .sql 文件")
+        self.btn_export_sql.clicked.connect(self._export_selected_sql)
         self.btn_clear_log = QPushButton("清空日志")
         self.btn_clear_log.clicked.connect(self.log_view.clear)
+        log_header.addWidget(self.btn_export_sql)
         log_header.addWidget(self.btn_clear_log)
-        layout.addLayout(log_header)
-        layout.addWidget(self.log_view)
+        log_panel = QWidget()
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.addLayout(log_header)
+        log_layout.addWidget(self.log_view)
+
+        # 垂直分割：上半（表格+详情）/下半（日志），可拖动调高（#5）
+        vsplit = QSplitter(Qt.Orientation.Vertical)
+        vsplit.addWidget(splitter)
+        vsplit.addWidget(log_panel)
+        vsplit.setStretchFactor(0, 4)
+        vsplit.setStretchFactor(1, 1)
+        vsplit.setSizes([380, 140])
+        layout.addWidget(vsplit, 1)
 
         self.setCentralWidget(central)
 
@@ -193,7 +213,7 @@ class MainWindow(QMainWindow):
             sql_text = f"｜SQL同步: {mark}{sql.get('last_status')}"
         self.label_status.setText(f"{state_text}｜最近检查: {last or '-'}{sql_text}")
         self.btn_check.setEnabled(not busy)
-        self.btn_update.setEnabled(not busy and bool(pending.get("pending")))
+        self._update_update_button()
 
         self._fill_table(pending)
 
@@ -208,28 +228,93 @@ class MainWindow(QMainWindow):
     def _fill_table(self, pending: dict) -> None:
         items = pending.get("pending") or []
         self._current_pending = items
-        self.table.setRowCount(len(items))
-        for row, p in enumerate(items):
-            new = p.get("new")
-            new_text = new if isinstance(new, str) else " → ".join(new or [])
-            for col, text in enumerate([
-                p.get("type", ""), p.get("name", ""), p.get("old") or "未安装",
-                new_text, p.get("alias") or "",
-            ]):
-                self.table.setItem(row, col, QTableWidgetItem(str(text)))
+        self.table.blockSignals(True)  # 填充期间不触发 itemChanged
+        try:
+            self.table.setRowCount(len(items))
+            for row, p in enumerate(items):
+                new = p.get("new")
+                new_text = new if isinstance(new, str) else " → ".join(new or [])
+                # 勾选列（默认全选）
+                chk = QTableWidgetItem()
+                chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                             | Qt.ItemFlag.ItemIsSelectable)
+                chk.setCheckState(Qt.CheckState.Checked)
+                self.table.setItem(row, 0, chk)
+                for col, text in enumerate([
+                    p.get("type", ""), p.get("name", ""), p.get("old") or "未安装",
+                    new_text, p.get("alias") or "",
+                ], start=1):
+                    item = QTableWidgetItem(str(text))
+                    item.setToolTip(str(text))  # 内容被遮挡时悬停显示全文（#4）
+                    self.table.setItem(row, col, item)
+            self.table.resizeColumnsToContents()   # 列宽自适应（#4）
+            self.table.resizeRowsToContents()
+        finally:
+            self.table.blockSignals(False)
         if self.table.currentRow() >= len(items):
             self.table.clearSelection()
             self.changelog_view.clear()
+        self._update_update_button()
+
+    def _on_item_changed(self, item) -> None:
+        """勾选状态变化 → 更新"立即更新"可用性（#3）。"""
+        if item.column() == 0:
+            self._update_update_button()
+
+    def _checked_names(self) -> list[str]:
+        names = []
+        for row in range(self.table.rowCount()):
+            chk = self.table.item(row, 0)
+            name_item = self.table.item(row, 2)
+            if chk is not None and name_item is not None and \
+                    chk.checkState() == Qt.CheckState.Checked:
+                names.append(name_item.text())
+        return names
+
+    def _update_update_button(self) -> None:
+        has_pending = bool(getattr(self, "_current_pending", []))
+        self.btn_update.setEnabled(
+            not (self._busy) and has_pending and bool(self._checked_names()))
 
     def _show_changelog(self, row: int) -> None:
         pending = getattr(self, "_current_pending", [])
-        if 0 <= row < len(pending):
-            cl = pending[row].get("changelog")
-            if isinstance(cl, dict):
-                text = "\n\n".join(f"【{tag}】\n{msg or '-'}" for tag, msg in cl.items())
-            else:
-                text = str(cl or "（无 changelog）")
-            self.changelog_view.setPlainText(text)
+        if not (0 <= row < len(pending)):
+            return
+        item = pending[row]
+        cl = item.get("changelog")
+        if isinstance(cl, dict):
+            text = "\n\n".join(f"【{tag}】\n{msg or '-'}" for tag, msg in cl.items())
+        else:
+            text = str(cl or "（无 changelog）")
+        sql = item.get("sql") or []
+        if sql:
+            preview = sql[:_MAX_SQL_PREVIEW_LINES]
+            note = ""
+            if len(sql) > _MAX_SQL_PREVIEW_LINES:
+                note = f"\n\n（共 {len(sql)} 条，仅预览前 {_MAX_SQL_PREVIEW_LINES} 条，完整内容请点【导出 SQL】）"
+            text += "\n\n──── 变更 SQL ────\n" + "\n".join(preview) + note
+        self.changelog_view.setPlainText(text)
+
+    def _export_selected_sql(self) -> None:
+        """导出选中行的变更 SQL 到 .sql 文件（#2）。"""
+        row = self.table.currentRow()
+        pending = getattr(self, "_current_pending", [])
+        if not (0 <= row < len(pending)):
+            QMessageBox.information(self, "导出 SQL", "请先在列表中选中一条待更新项")
+            return
+        sql = pending[row].get("sql") or []
+        if not sql:
+            QMessageBox.information(self, "导出 SQL", "选中项没有数据库变更 SQL（仅 sqlsync 条目可导出）")
+            return
+        default = f"callfans-sqlsync-{pending[row].get('name', 'x').strip('()')}.sql"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出变更 SQL", default, "SQL 文件 (*.sql)")
+        if not path:
+            return
+        from pathlib import Path as _P
+
+        _P(path).write_text("\n".join(sql) + "\n", encoding="utf-8")
+        self.log(f"已导出 {len(sql)} 条 SQL → {path}")
 
     # ---------- 动作 ----------
 
@@ -247,6 +332,10 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def on_update_clicked(self) -> None:
+        selected = self._checked_names()
+        if not selected:
+            self.log("未勾选任何条目")
+            return
         self._busy = True
         self.btn_check.setEnabled(False)
         self.btn_update.setEnabled(False)
@@ -254,8 +343,8 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 0)
         self.progress.setValue(0)
         self.progress.setVisible(True)
-        self.log("开始更新（SQL → server → 前端）…")
-        self._run(client.update, self._update_done, self._action_failed)
+        self.log(f"开始更新（勾选 {len(selected)} 项）…")
+        self._run(lambda: client.update(selected), self._update_done, self._action_failed)
 
     def _update_done(self, report: dict) -> None:
         self._busy = False

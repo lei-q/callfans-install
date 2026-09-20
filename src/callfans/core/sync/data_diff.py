@@ -14,22 +14,23 @@ from .sqlgen import sql_literal
 
 
 class DataChange:
-    __slots__ = ("table", "kind", "up_sql", "down_sql", "pk")
+    __slots__ = ("table", "kind", "up_sql", "down_sql", "pk", "db")
 
-    def __init__(self, table: str, kind: str, up_sql: str, down_sql: str, pk=None):
+    def __init__(self, table: str, kind: str, up_sql: str, down_sql: str, pk=None, db=""):
         self.table = table
         self.kind = kind
         self.up_sql = up_sql
         self.down_sql = down_sql
         self.pk = pk
+        self.db = db
 
 
 class TableDataDiff:
     __slots__ = ("table", "rule_pk", "changes", "inserts", "updates", "deletes",
-                 "cloud_rows", "local_rows", "skipped_reason")
+                 "cloud_rows", "local_rows", "skipped_reason", "db")
 
     def __init__(self, table, rule_pk=None, changes=None, inserts=0, updates=0,
-                 deletes=0, cloud_rows=0, local_rows=0, skipped_reason=None):
+                 deletes=0, cloud_rows=0, local_rows=0, skipped_reason=None, db=""):
         self.table = table
         self.rule_pk = rule_pk
         self.changes = changes or []
@@ -39,10 +40,15 @@ class TableDataDiff:
         self.cloud_rows = cloud_rows
         self.local_rows = local_rows
         self.skipped_reason = skipped_reason
+        self.db = db
 
 
 def _q(name: str) -> str:
     return f"`{name}`"
+
+
+def _tq(db: str, name: str) -> str:
+    return f"`{db}`.`{name}`" if db else f"`{name}`"
 
 
 def _cols_of(rows: Iterable[dict]) -> list[str]:
@@ -52,7 +58,7 @@ def _cols_of(rows: Iterable[dict]) -> list[str]:
 
 
 def diff_rows(table: str, pk_col: str, cloud_rows: list[dict], local_rows: list[dict],
-              ignore: set[str] | None = None) -> list[DataChange]:
+              ignore: set[str] | None = None, db: str = "") -> list[DataChange]:
     """纯函数：两条按 pk 升序的 dict 行流 → 变更列表（不碰数据库）。"""
     ignored = set(ignore or ())
     cloud_cols = [c for c in _cols_of(cloud_rows) if c not in ignored]
@@ -67,9 +73,9 @@ def diff_rows(table: str, pk_col: str, cloud_rows: list[dict], local_rows: list[
         vals = ", ".join(sql_literal(row[c]) for c in write_cols)
         changes.append(DataChange(
             table, "insert",
-            f"INSERT INTO {_q(table)} ({cols}) VALUES ({vals});",
-            f"DELETE FROM {_q(table)} WHERE {_q(pk_col)} = {sql_literal(row[pk_col])};",
-            pk=row[pk_col],
+            f"INSERT INTO {_tq(db, table)} ({cols}) VALUES ({vals});",
+            f"DELETE FROM {_tq(db, table)} WHERE {_q(pk_col)} = {sql_literal(row[pk_col])};",
+            pk=row[pk_col], db=db,
         ))
 
     def _delete(row: dict) -> None:
@@ -77,9 +83,9 @@ def diff_rows(table: str, pk_col: str, cloud_rows: list[dict], local_rows: list[
         vals = ", ".join(sql_literal(row[c]) for c in local_cols)
         changes.append(DataChange(
             table, "delete",
-            f"DELETE FROM {_q(table)} WHERE {_q(pk_col)} = {sql_literal(row[pk_col])};",
-            f"INSERT INTO {_q(table)} ({cols}) VALUES ({vals});",
-            pk=row[pk_col],
+            f"DELETE FROM {_tq(db, table)} WHERE {_q(pk_col)} = {sql_literal(row[pk_col])};",
+            f"INSERT INTO {_tq(db, table)} ({cols}) VALUES ({vals});",
+            pk=row[pk_col], db=db,
         ))
 
     def _update(c_row: dict, l_row: dict) -> None:
@@ -92,9 +98,9 @@ def diff_rows(table: str, pk_col: str, cloud_rows: list[dict], local_rows: list[
         where = f"WHERE {_q(pk_col)} = {sql_literal(c_row[pk_col])}"
         changes.append(DataChange(
             table, "update",
-            f"UPDATE {_q(table)} SET {sets} {where};",
-            f"UPDATE {_q(table)} SET {back} {where};",
-            pk=c_row[pk_col],
+            f"UPDATE {_tq(db, table)} SET {sets} {where};",
+            f"UPDATE {_tq(db, table)} SET {back} {where};",
+            pk=c_row[pk_col], db=db,
         ))
 
     ci, li = iter(cloud_rows), iter(local_rows)
@@ -123,7 +129,7 @@ def diff_rows(table: str, pk_col: str, cloud_rows: list[dict], local_rows: list[
     return changes
 
 
-def seed_inserts(table: str, cloud_rows: list[dict]) -> list[DataChange]:
+def seed_inserts(table: str, cloud_rows: list[dict], db: str = "") -> list[DataChange]:
     """新建表的种子数据（全量 INSERT；Down 为整表清空，数据恢复依赖备份）。"""
     cols = _cols_of(cloud_rows)
     out = []
@@ -132,8 +138,8 @@ def seed_inserts(table: str, cloud_rows: list[dict]) -> list[DataChange]:
         vals = ", ".join(sql_literal(row[c]) for c in cols)
         out.append(DataChange(
             table, "insert",
-            f"INSERT INTO {_q(table)} ({col_sql}) VALUES ({vals});",
-            f"DELETE FROM {_q(table)};  -- Down 为整表清空，数据恢复依赖备份",
-            pk=row.get(cols[0]) if cols else None,
+            f"INSERT INTO {_tq(db, table)} ({col_sql}) VALUES ({vals});",
+            f"DELETE FROM {_tq(db, table)};  -- Down 为整表清空，数据恢复依赖备份",
+            pk=row.get(cols[0]) if cols else None, db=db,
         ))
     return out
