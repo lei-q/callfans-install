@@ -153,6 +153,43 @@ class TestColumnLevel:
         assert "unsigned" in mods[0].ddl.lower()
         assert "unsigned" in mods[0].detail  # 指纹层面已检出
 
+    def test_column_comment_only_change_detected(self):
+        """列注释差异必须检出（2026-09-20 实测盲区：仅改 COMMENT 曾被判无差异）。"""
+        manifest = [_rule("sys_config")]
+
+        def table_with(comment):
+            return lambda md: Table(
+                "sys_config", md,
+                Column("id", Integer, primary_key=True),
+                Column("k", VARCHAR(64), nullable=False, comment=comment),
+            )
+
+        cloud = _md([table_with("机器名称")])
+        local = _md([table_with(None)])
+        result = diff_schemas(cloud, local, manifest)
+        mods = [c for c in result.changes if c.kind == "modify_column"]
+        assert len(mods) == 1
+        assert "COMMENT '机器名称'" in mods[0].ddl
+        assert "注释" in mods[0].detail and not mods[0].destructive
+        # Down 回写到旧注释（本地无注释 → MODIFY 不带 COMMENT）
+        assert "COMMENT" not in mods[0].down_ddl
+
+    def test_same_comment_no_diff(self):
+        manifest = [_rule("sys_config")]
+
+        def table_with(comment):
+            return lambda md: Table(
+                "sys_config", md,
+                Column("id", Integer, primary_key=True),
+                Column("k", VARCHAR(64), nullable=False, comment=comment),
+            )
+
+        assert diff_schemas(_md([table_with("a")]), _md([table_with("a")]),
+                            manifest).changes == []
+        # 空串与 None 等价
+        assert diff_schemas(_md([table_with("")]), _md([table_with(None)]),
+                            manifest).changes == []
+
     def test_ignore_columns(self):
         rule = _rule("sys_config", ignore_columns=["remark", "legacy"])
         cloud = _md([_config_table])

@@ -245,3 +245,38 @@ def test_executor_with_real_backup_and_state(sandbox, tmp_path):
     again = build_plan(cfg, cloud, local, manifest)
     assert again.statement_count == 0, again.report_text()
 
+
+def test_comment_only_change_roundtrip(sandbox):
+    """列注释差异的端到端验证（2026-09-20 实测盲区）。"""
+    from sqlalchemy import text
+
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    # 云库仅改列注释
+    _exec_sql(cloud_port, [
+        "ALTER TABLE std.sys_dict MODIFY COLUMN value TEXT COMMENT '标记值'",
+    ])
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", "biz"),
+        policy=SyncPolicy(),
+    )
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    manifest = [TableRule(name="sys_dict", data=True, pk="code")]
+
+    plan = build_plan(cfg, cloud, local, manifest)
+    mods = [c for c in plan.schema_changes if c.kind == "modify_column"]
+    assert len(mods) == 1, plan.report_text()
+    assert "COMMENT '标记值'" in mods[0].ddl
+    assert "注释" in mods[0].detail
+
+    with local.begin() as conn:
+        for stmt in plan.up_statements():
+            conn.execute(text(stmt))
+
+    again = build_plan(cfg, cloud, local, manifest)
+    assert again.statement_count == 0, f"注释 roundtrip 非空: {again.report_text()}"
+

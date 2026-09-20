@@ -58,7 +58,7 @@ def mysql_type_str(col_type) -> str:
 
 
 def column_fingerprint(col) -> tuple:
-    """SQLAlchemy Column → 可比较指纹。"""
+    """SQLAlchemy Column → 可比较指纹（含列注释——2026-09-20 实测盲区补齐）。"""
     return (
         col.name.lower(),
         normalize_type(mysql_type_str(col.type)),
@@ -68,6 +68,7 @@ def column_fingerprint(col) -> tuple:
             and hasattr(col.server_default, "arg") else None
         ),
         bool(col.autoincrement is True),
+        (col.comment or "").strip() or None,
     )
 
 

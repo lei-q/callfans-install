@@ -147,8 +147,10 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
                 down_ddl=f"ALTER TABLE {_quote(rule.name)} DROP COLUMN {_quote(name)};",
             ))
         elif column_fingerprint(col) != column_fingerprint(local_cols[name]):
-            _, c_type, _, c_def, _ = column_fingerprint(col)
-            _, l_type, _, l_def, _ = column_fingerprint(local_cols[name])
+            c_fp = column_fingerprint(col)
+            l_fp = column_fingerprint(local_cols[name])
+            _, c_type, _, c_def, _, c_cmt = c_fp
+            _, l_type, _, l_def, _, l_cmt = l_fp
             detail = []
             if c_type != l_type:
                 detail.append(f"{l_type}→{c_type}")
@@ -156,6 +158,8 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
                 detail.append("可空性" if col.nullable else "非空")
             if c_def != l_def:
                 detail.append(f"默认 {c_def!r}")
+            if c_cmt != l_cmt:
+                detail.append(f"注释 {l_cmt!r}→{c_cmt!r}")
             result.changes.append(SchemaChange(
                 "modify_column", rule.name,
                 f"ALTER TABLE {_quote(rule.name)} MODIFY COLUMN {_col_ddl(col)}",
