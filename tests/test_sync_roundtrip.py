@@ -189,3 +189,59 @@ def test_data_roundtrip_plan_apply_replan_empty(sandbox):
     assert again.statement_count == 0, f"数据 roundtrip 非空:\n{again.report_text()}"
     assert again.checksum_cloud == plan.checksum_cloud  # 校验和稳定
 
+
+def test_executor_with_real_backup_and_state(sandbox, tmp_path):
+    """M4 闸门：真实执行器——G1 备份落库、state 记账、apply 后收敛。"""
+    from sqlalchemy import text
+
+    from callfans.core.local import StateStore
+    from callfans.core.sync.backup import BackupManager
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.executor import SqlSyncExecutor
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    # 制造新漂移：云库加列 + 插行
+    _exec_sql(cloud_port, [
+        "ALTER TABLE std.sys_dict ADD COLUMN note VARCHAR(64)",
+        "INSERT INTO std.sys_dict (code, value, note) VALUES ('c5','v5','n5')",
+    ])
+
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", "biz"),
+        policy=SyncPolicy(),
+    )
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    manifest = [TableRule(name="sys_dict", data=True, pk="code")]
+
+    def conn_factory():
+        import pymysql
+
+        return pymysql.connect(host="127.0.0.1", port=local_port, user="root",
+                               password="root", database="biz", charset="utf8mb4")
+
+    state = StateStore(tmp_path / "state.json")
+    executor = SqlSyncExecutor(cfg, local, BackupManager(conn_factory, tmp_path / "bak"),
+                               state=state, history_path=tmp_path / "h.jsonl")
+    plan = build_plan(cfg, cloud, local, manifest)
+    assert not plan.fatal and plan.statement_count >= 2  # 加列 + 插行
+
+    report = executor.apply(plan)
+    assert report.status == "success", report.error
+    assert report.executed == report.total
+    assert "sys_dict" in report.backup_tables  # G1：bak 表已建
+
+    with local.connect() as conn:
+        baks = [r[0] for r in conn.execute(text("SHOW TABLES")).fetchall()
+                if str(r[0]).startswith("_cf_bak_")]
+    assert baks, "备份表未落库"
+
+    rec = state.get("sqlsync")
+    assert rec["last_status"] == "success" and rec["checksum_cloud"] == plan.checksum_cloud
+    assert '"domain": "sqlsync"' in (tmp_path / "h.jsonl").read_text(encoding="utf-8")
+
+    again = build_plan(cfg, cloud, local, manifest)
+    assert again.statement_count == 0, again.report_text()
+

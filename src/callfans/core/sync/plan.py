@@ -107,14 +107,29 @@ def _columns_of(md, name) -> list[str]:
     return [c.name for c in md.tables[name].columns]
 
 
-def _fetch_stream(engine, table: str, columns: list[str], pk: str, batch: int = 1000):
+def _fetch_all(engine, table: str, columns: list[str], pk: str, batch: int = 1000) -> list[dict]:
+    """键集分页拉取全表（每批短查询，无长生命周期游标），返回 dict 行。
+
+    流式游标 + 生成器跨 yield 持连接的模式在实测中出现连接被回收导致的
+    InterfaceError(0,'')（2026-09-20 沙箱实测定论）；配置表行数受护栏
+    上限约束，全量入内存可接受。
+    """
     cols = ", ".join(f"`{c}`" for c in columns)
+    rows: list[dict] = []
+    last = None
     with engine.connect() as conn:
-        result = conn.execution_options(stream_results=True).execute(
-            text(f"SELECT {cols} FROM `{table}` ORDER BY `{pk}`")
-        )
-        while rows := result.fetchmany(batch):
-            yield from rows
+        while True:
+            if last is None:
+                q = text(f"SELECT {cols} FROM `{table}` ORDER BY `{pk}` LIMIT {batch}")
+                chunk = [dict(r) for r in conn.execute(q).mappings().fetchall()]
+            else:
+                q = text(f"SELECT {cols} FROM `{table}` WHERE `{pk}` > :last "
+                         f"ORDER BY `{pk}` LIMIT {batch}")
+                chunk = [dict(r) for r in conn.execute(q, {"last": last}).mappings().fetchall()]
+            rows.extend(chunk)
+            if len(chunk) < batch:
+                return rows
+            last = chunk[-1][pk]
 
 
 def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
@@ -154,15 +169,16 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
                     rule.name, rule.pk, skipped_reason="无主键，跳过数据同步（策略 skip_warn）"))
             continue
 
-        columns = _columns_of(cloud_md, rule.name)
+        cloud_cols = _columns_of(cloud_md, rule.name)
+        local_cols = _columns_of(local_md, rule.name) if rule.name in local_md.tables else []
         c_rows = row_count(cloud_engine, rule.name)
         l_rows = row_count(local_engine, rule.name) if rule.name in local_md.tables else 0
 
         if rule.name in added_tables:
             # 新建表：种子数据
-            rows = list(_fetch_stream(cloud_engine, rule.name, columns, rule.pk))
+            rows = _fetch_all(cloud_engine, rule.name, cloud_cols, rule.pk)
             data_tables.append(TableDataDiff(
-                rule.name, rule.pk, changes=seed_inserts(rule.name, columns, rows),
+                rule.name, rule.pk, changes=seed_inserts(rule.name, rows),
                 inserts=len(rows), cloud_rows=c_rows, local_rows=0))
             continue
 
@@ -181,9 +197,9 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
             continue
 
         changes = diff_rows(
-            rule.name, columns, rule.pk,
-            _fetch_stream(cloud_engine, rule.name, columns, rule.pk),
-            _fetch_stream(local_engine, rule.name, columns, rule.pk),
+            rule.name, rule.pk,
+            _fetch_all(cloud_engine, rule.name, cloud_cols, rule.pk),
+            _fetch_all(local_engine, rule.name, local_cols, rule.pk),
             ignore=set(rule.ignore_columns),
         )
         tdd = TableDataDiff(rule.name, rule.pk, changes=changes,
