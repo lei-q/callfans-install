@@ -16,6 +16,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "oras>=0.1.30",
     "pymysql>=1.1",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
