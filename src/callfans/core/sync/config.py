@@ -117,11 +117,11 @@ class CloudSyncConfig:
             database=_env("MYSQL_DATABASE", ""),
             ca=_env("MYSQL_CA"),
         )
-        missing = [f"CLOUD_DB_{k.upper()}" for k in cloud.missing_keys()]
+        missing = ["CLOUD_DB_NAME" for _ in cloud.missing_keys()]
         missing += [f"MYSQL_{k.upper()}" for k in local.missing_keys()]
         if missing:
             raise SyncConfigError(
-                f"sqlsync 配置缺失: {', '.join(missing)}"
+                f"sqlsync 配置缺失: {', '.join(sorted(set(missing)))}"
                 "（云端连接已内置于程序，仅需配置标准库名 CLOUD_DB_NAME 与 B 库名 MYSQL_DATABASE）"
             )
         policy = SyncPolicy(
