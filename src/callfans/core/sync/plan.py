@@ -33,6 +33,9 @@ class SyncPlan:
     data_tables: list[TableDataDiff]
     guard_violations: list[GuardViolation]
     checksum_cloud: str
+    # 诊断信息：解析后的连接目标与清单表明细（定位"改错服务器/登记错库"）
+    targets: dict = field(default_factory=dict)
+    manifest_tables: list[str] = field(default_factory=list)
 
     @property
     def statement_count(self) -> int:
@@ -74,8 +77,14 @@ class SyncPlan:
     # ---- 报告 ----
 
     def report_text(self) -> str:
-        lines = [f"sqlsync 计划 run={self.run_id}（{self.created_at}）",
-                 f"语句总数: {self.statement_count}｜涉及表: {len(self.affected_tables)}"]
+        lines = [f"sqlsync 计划 run={self.run_id}（{self.created_at}）"]
+        if self.targets:
+            lines.append(f"目标: 云库 {self.targets.get('cloud')} → B 库 {self.targets.get('local')}")
+        if self.manifest_tables:
+            shown = ", ".join(self.manifest_tables[:12]) + (
+                f" 等 {len(self.manifest_tables)} 张" if len(self.manifest_tables) > 12 else "")
+            lines.append(f"清单: {shown}")
+        lines.append(f"语句总数: {self.statement_count}｜涉及表: {len(self.affected_tables)}")
         for d in self.data_tables:
             if d.changes or d.skipped_reason:
                 note = d.skipped_reason or (
@@ -220,8 +229,14 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
 
     # 云库校验和：结构指纹 + 行数（v1 口径，记录于 state 用于漂移追踪）
     checksum = _cloud_checksum(cloud_md, data_tables)
+
+    def _target(t) -> str:
+        return f"{t.host}:{t.port}/{t.database} ({t.user})"
+
     return SyncPlan(run_id, created_at, schema.changes, data_tables,
-                    violations, checksum)
+                    violations, checksum,
+                    targets={"cloud": _target(cfg.cloud), "local": _target(cfg.local)},
+                    manifest_tables=[r.name for r in manifest])
 
 
 def _cloud_checksum(cloud_md, data_tables: list[TableDataDiff]) -> str:

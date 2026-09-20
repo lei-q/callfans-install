@@ -275,6 +275,12 @@ def sqlsync_status(env: Path = EnvOpt) -> None:
         typer.secho(f"status 失败: {e}", fg=typer.colors.RED)
         raise typer.Exit(1)
     typer.echo(f"云库: {st['cloud']}｜B 库: {st['local']}")
+    targets = st.get("targets") or {}
+    if targets:
+        typer.echo(f"目标: 云库 {targets.get('cloud')} → B 库 {targets.get('local')}")
+    drift = st.get("drift", {})
+    if isinstance(drift, dict) and drift.get("manifest"):
+        typer.echo(f"清单: {', '.join(drift['manifest'])}")
     last = st.get("last_run")
     if last:
         typer.echo(f"上次同步: {last.get('last_status')} run={last.get('last_run_id')} "

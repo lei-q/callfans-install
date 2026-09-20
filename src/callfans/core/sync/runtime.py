@@ -84,6 +84,12 @@ class SqlSyncRuntime:
                 return f"不可达: {type(e).__name__}"
 
         last = self.state.get("sqlsync") or {}
+        targets = {
+            "cloud": f"{self.cfg.cloud.host}:{self.cfg.cloud.port}/"
+                     f"{self.cfg.cloud.database} ({self.cfg.cloud.user})",
+            "local": f"{self.cfg.local.host}:{self.cfg.local.port}/"
+                     f"{self.cfg.local.database} ({self.cfg.local.user})",
+        }
         try:
             plan = self.build()
             drift = {
@@ -91,12 +97,14 @@ class SqlSyncRuntime:
                 "tables": len(plan.affected_tables),
                 "fatal_guard": plan.fatal,
                 "checksum_cloud": plan.checksum_cloud,
+                "manifest": plan.manifest_tables,
             }
         except Exception as e:
             drift = {"error": f"{type(e).__name__}: {e}"}
         return {
             "cloud": _ping(self.cloud, "cloud"),
             "local": _ping(self.local, "local"),
+            "targets": targets,
             "last_run": last or None,
             "drift": drift,
         }

@@ -136,7 +136,9 @@ class TestRuntime:
 
         fake_plan = SyncPlan(run_id="20260920120000", created_at="t",
                              schema_changes=schema, data_tables=[],
-                             guard_violations=[], checksum_cloud="cs")
+                             guard_violations=[], checksum_cloud="cs",
+                             targets={"cloud": "h:3306/std (u)", "local": "h:3307/biz (u)"},
+                             manifest_tables=["t"])
 
         rt = SqlSyncRuntime(cfg, cloud_engine=FakeEngine(), local_engine=_ExecEngine(),
                             state=state, artifacts_root=tmp_path / "art",
@@ -151,6 +153,17 @@ class TestRuntime:
         rec = state.get("sqlsync")
         assert rec["last_status"] == "success"
         assert rec["checksum_cloud"] == "cs"
+
+    def test_status_shows_resolved_targets_and_manifest(self, tmp_path):
+        """诊断输出：解析后的连接目标 + 清单表明细（定位改错服务器/登记错库）。"""
+        rt, _ = self._runtime(tmp_path)
+        st = rt.status()
+        assert st["targets"]["local"] == "h:3307/biz (u)"
+        assert st["targets"]["cloud"] == "h:3306/std (u)"
+        assert st["drift"]["manifest"] == ["t"]  # 来自注入计划的清单字段
+        # 报告头也带目标行
+        plan = rt.build()
+        assert "云库" in plan.report_text() and "B 库" in plan.report_text()
 
     def test_rollback_by_run_id(self, tmp_path):
         rt, _ = self._runtime(tmp_path)
