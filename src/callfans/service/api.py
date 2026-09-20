@@ -109,6 +109,15 @@ def create_app(
         state.busy = True
         try:
             plan = await anyio.to_thread.run_sync(checker.run)
+            # sqlsync 漂移并入检查结果（只读 plan，2026-09-21 补：此前检查按钮
+            # 对数据库变更无感，漂移只在定时任务执行时才被感知）
+            if sqlsync_cfg is not None:
+                try:
+                    drift = await anyio.to_thread.run_sync(_sqlsync_drift_item)
+                    if drift is not None:
+                        plan.pending.append(drift)
+                except Exception as e:
+                    log.warning("sqlsync 漂移评估失败（不影响制品检查）: %s", e)
             state.plan = plan
             state.last_check = datetime.now(timezone.utc)
             state.error = None
@@ -225,6 +234,20 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(e)) from e
         finally:
             state.updating = False
+
+    def _sqlsync_drift_item():
+        """只读评估数据库漂移；无差异返回 None，有则返回待更新伪条目。"""
+        from ..core.models import PendingItem
+
+        runtime = SqlSyncRuntime(sqlsync_cfg)
+        plan = runtime.build()
+        n = plan.statement_count
+        if n == 0:
+            return None
+        return PendingItem(
+            name="(sqlsync)", type="sqlsync", old=None,
+            new=f"{n} 条数据库变更", changelog=plan.report_text(),
+        )
 
     def _sqlsync_item(result: str, error, status: str = "", run_id: str = "") -> dict:
         return {

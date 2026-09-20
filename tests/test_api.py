@@ -87,9 +87,7 @@ def test_update_empty_plan():
 
 def test_update_merges_sqlsync_then_artifacts(monkeypatch):
     """更新链路：sqlsync → 制品；sqlsync 失败不阻断后续（Q9/M6）。"""
-    import callfans.core.sync.runtime as rt_mod
     from callfans.service import api as api_mod
-    from callfans.core.sync.config import SyncPolicy
 
     class FakeReport:
         status = "aborted_by_guard"
@@ -105,6 +103,9 @@ def test_update_merges_sqlsync_then_artifacts(monkeypatch):
 
         def apply(self, force=False):
             return FakeReport()
+
+        def build(self):
+            raise AssertionError("update 链路不应构建漂移计划")
 
     monkeypatch.setattr(api_mod, "SqlSyncRuntime", FakeRuntime)
 
@@ -123,6 +124,42 @@ def test_update_merges_sqlsync_then_artifacts(monkeypatch):
         assert report["items"][0]["result"] == "failed"
         assert report["summary"]["failed"] == 1
         assert "sqlsync" in str(client.get("/api/v1/status", headers=headers).json())
+
+
+def test_check_includes_sqlsync_drift(monkeypatch):
+    """检查按钮对数据库漂移可见（2026-09-21 补）：有漂移进待更新列表。"""
+    from callfans.core.sync.plan import SyncPlan
+    from callfans.service import api as api_mod
+
+    class FakePlan:
+        statement_count = 3
+
+        def report_text(self):
+            return "语句总数: 3｜涉及表: 1\n结构: 修改列 mobile_arm_server"
+
+    class FakeRuntime:
+        def __init__(self, cfg, on_event=None, **kw):
+            pass
+
+        def build(self):
+            return FakePlan()
+
+    monkeypatch.setattr(api_mod, "SqlSyncRuntime", FakeRuntime)
+
+    class EmptyChecker:
+        def run(self):
+            return UpdatePlan(checked_at="t", pending=[])
+
+    app = create_app(make_cfg(), checker=EmptyChecker(), token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=object())
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        resp = client.post("/api/v1/check", headers=headers)
+        assert resp.status_code == 200
+        pending = resp.json()["pending"]
+        assert [p["type"] for p in pending] == ["sqlsync"]
+        assert pending[0]["new"] == "3 条数据库变更"
+        assert "mobile_arm_server" in pending[0]["changelog"]
 
 
 def test_ws_events_broadcast():
