@@ -181,6 +181,33 @@ def test_stage_indicator_animation(qapp):
     assert w.stage_label.text() == ""
 
 
+def test_sqlsync_events_stage_and_notify(qapp):
+    """sqlsync 事件：执行进度驱动指示器，失败触发托盘通知信号。"""
+    from callfans.ui.main_window import MainWindow
+
+    w = MainWindow(poll_enabled=False)
+    notified: list = []
+    w.notify.connect(lambda t, m: notified.append((t, m)))
+
+    w._on_event({"event": "sqlsync_progress", "data": {"stage": "backup", "tables": ["t1"]}})
+    assert "备份受影响表" in w.stage_label.text()
+    w._on_event({"event": "sqlsync_progress",
+                 "data": {"stage": "execute", "index": 3, "total": 12}})
+    assert "SQL 同步 3/12" in w.stage_label.text()
+    # 成功：日志记录、不通知
+    w._on_event({"event": "sqlsync_done",
+                 "data": {"status": "success", "run_id": "R1"}})
+    assert "SQL 同步完成" in w.log_view.toPlainText()
+    assert notified == []
+    assert w.stage_label.text() == ""
+    # 失败：日志 + 托盘通知
+    w._on_event({"event": "sqlsync_done",
+                 "data": {"status": "aborted_by_guard", "run_id": "R2",
+                          "error": "[G2] 语句超限"}})
+    assert notified and "语句超限" in notified[0][1]
+    assert "aborted_by_guard" in w.log_view.toPlainText()
+
+
 def test_quit_button_exits_when_idle(qapp, monkeypatch):
     import callfans.ui.main_window as mw
 

@@ -51,6 +51,8 @@ class TrayController:
         self.icon.activated.connect(self._on_activated)
         self.icon.show()
         window.new_pending.connect(self._notify_new_pending)
+        window.notify.connect(lambda title, msg: self.icon.showMessage(
+            title, msg, QSystemTrayIcon.MessageIcon.Warning))
 
     def _show_window(self) -> None:
         self.window.showNormal()

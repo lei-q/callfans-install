@@ -30,11 +30,12 @@ _STAGE_TEXT = {
     "up": "启动新容器",
     "up_progress": "启动新容器",
     "verify": "健康观察",
-    "sql_pull": "拉取 SQL 制品",
-    "sql_exec": "执行 SQL",
     "unzip": "解压前端包",
     "replace": "替换前端目录",
     "tag_backfill": "补齐 tag 变量",
+    "backup": "备份受影响表",
+    "execute": "SQL 同步执行",
+    "rollback": "SQL 同步回滚",
 }
 _SPINNER_FRAMES = "|/-\\"
 
@@ -69,6 +70,7 @@ class Worker(QObject):
 
 class MainWindow(QMainWindow):
     new_pending = Signal(int)  # 通知托盘弹气泡
+    notify = Signal(str, str)  # (标题, 内容) 通用托盘通知（如 sqlsync 失败）
 
     def __init__(self, poll_enabled: bool = True):
         super().__init__()
@@ -184,7 +186,12 @@ class MainWindow(QMainWindow):
         updating = status.get("updating")
         state_text = "更新中…" if updating else ("检查中…" if status.get("busy") else "服务正常")
         last = status.get("last_check")
-        self.label_status.setText(f"{state_text}｜最近检查: {last or '-'}")
+        sql = status.get("sqlsync") or {}
+        sql_text = ""
+        if sql:
+            mark = "✓" if sql.get("last_status") == "success" else "⚠"
+            sql_text = f"｜SQL同步: {mark}{sql.get('last_status')}"
+        self.label_status.setText(f"{state_text}｜最近检查: {last or '-'}{sql_text}")
         self.btn_check.setEnabled(not busy)
         self.btn_update.setEnabled(not busy and bool(pending.get("pending")))
 
@@ -351,6 +358,21 @@ class MainWindow(QMainWindow):
             self._set_stage(None)
             self.progress.setValue(self.progress.maximum())
             self.refresh()
+        elif event == "sqlsync_progress":
+            stage = data.get("stage", "")
+            if stage == "execute" and data.get("total"):
+                self._set_stage(f"SQL 同步 {data.get('index', 0)}/{data['total']}")
+            else:
+                self._set_stage(_STAGE_TEXT.get(stage, stage) or stage)
+        elif event == "sqlsync_done":
+            self._set_stage(None)
+            status = data.get("status", "")
+            if status == "success":
+                self.log(f"◆ SQL 同步完成（run {data.get('run_id')}）")
+            else:
+                msg = data.get("error") or data.get("guard") or status
+                self.log(f"◆ SQL 同步未完成 [{status}]: {msg}")
+                self.notify.emit("SQL 同步未完成", str(msg)[:160])
 
     # ---------- 退出 ----------
 

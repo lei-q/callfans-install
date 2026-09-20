@@ -85,6 +85,46 @@ def test_update_empty_plan():
         assert report["summary"] == {"success": 0, "failed": 0, "rolled_back": 0}
 
 
+def test_update_merges_sqlsync_then_artifacts(monkeypatch):
+    """更新链路：sqlsync → 制品；sqlsync 失败不阻断后续（Q9/M6）。"""
+    import callfans.core.sync.runtime as rt_mod
+    from callfans.service import api as api_mod
+    from callfans.core.sync.config import SyncPolicy
+
+    class FakeReport:
+        status = "aborted_by_guard"
+        run_id = "R1"
+        executed = 0
+        total = 0
+        error = "护栏拦截（--force 可越过）:\n[G2] 语句超限"
+        guard_summary = "[G2] 语句超限"
+
+    class FakeRuntime:
+        def __init__(self, cfg, on_event=None, **kw):
+            pass
+
+        def apply(self, force=False):
+            return FakeReport()
+
+    monkeypatch.setattr(api_mod, "SqlSyncRuntime", FakeRuntime)
+
+    class EmptyChecker:
+        def run(self):
+            return UpdatePlan(checked_at="t", pending=[])
+
+    app = create_app(make_cfg(), checker=EmptyChecker(), token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=object())
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        resp = client.post("/api/v1/update", headers=headers)
+        assert resp.status_code == 200
+        report = resp.json()
+        assert report["items"][0]["type"] == "sqlsync"
+        assert report["items"][0]["result"] == "failed"
+        assert report["summary"]["failed"] == 1
+        assert "sqlsync" in str(client.get("/api/v1/status", headers=headers).json())
+
+
 def test_ws_events_broadcast():
     client, stub = make_client()
     with client:

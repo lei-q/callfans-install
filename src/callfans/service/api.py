@@ -29,7 +29,10 @@ from .. import __version__
 from ..config import Config
 from ..core.checker import Checker
 from ..core.harbor import HarborClient
+from ..core.local import StateStore
 from ..core.models import UpdatePlan
+from ..core.sync.config import CloudSyncConfig, SyncConfigError
+from ..core.sync.runtime import SqlSyncRuntime
 from ..core.updaters.runner import UpdateRunner
 from ..paths import log_file, runtime_file, state_file
 from .hub import EventHub
@@ -79,11 +82,20 @@ def create_app(
     enable_scheduler: bool = True,
     write_runtime_file: bool = False,
     port: int | None = None,
+    sqlsync_cfg="auto",
 ) -> FastAPI:
     token = token or secrets.token_urlsafe(32)
     hub = EventHub()
     state = CheckState()
     main_loop: asyncio.AbstractEventLoop | None = None
+
+    # sqlsync 可选域：未配置 CLOUD_DB_* 时整体停用（不影响制品更新）
+    if sqlsync_cfg == "auto":
+        try:
+            sqlsync_cfg = CloudSyncConfig.from_env()
+        except SyncConfigError:
+            sqlsync_cfg = None
+            log.info("sqlsync 未配置（缺 CLOUD_DB_*），SQL 同步域停用")
 
     def emit(event: str, data: dict) -> None:
         """工作线程 → 主事件循环的 WS 广播桥。"""
@@ -131,8 +143,20 @@ def create_app(
             except (ValueError, KeyError):
                 pass
         task = None
+        sqlsync_task = None
         if enable_scheduler:
             task = start_scheduler(cfg, state, do_check)
+        if enable_scheduler and sqlsync_cfg is not None:
+            async def _sqlsync_loop():
+                await asyncio.sleep(60)  # 启动缓冲
+                while True:
+                    try:
+                        await anyio.to_thread.run_sync(lambda: _run_sqlsync_once())
+                    except Exception:
+                        log.exception("定时 sqlsync 失败")
+                    await asyncio.sleep(sqlsync_cfg.interval_hours * 3600)
+
+            sqlsync_task = asyncio.create_task(_sqlsync_loop())
         if write_runtime_file and port is not None:
             write_runtime(runtime_file(), port, token, os.getpid())
         try:
@@ -140,6 +164,8 @@ def create_app(
         finally:
             if task is not None:
                 task.cancel()
+            if sqlsync_task is not None:
+                sqlsync_task.cancel()
             if write_runtime_file:
                 clear_runtime(runtime_file())
 
@@ -160,6 +186,7 @@ def create_app(
             "updating": state.updating,
             "pending_count": len(state.plan.pending) if state.plan else 0,
             "error": state.error,
+            "sqlsync": StateStore(state_file()).get("sqlsync"),
         }
 
     @app.post("/api/v1/check")
@@ -199,11 +226,48 @@ def create_app(
         finally:
             state.updating = False
 
+    def _sqlsync_item(result: str, error, status: str = "", run_id: str = "") -> dict:
+        return {
+            "name": "(sqlsync)", "type": "sqlsync", "old": None, "new": None,
+            "result": result, "error": error, "status": status, "run_id": run_id,
+        }
+
+    def _run_sqlsync_once() -> dict:
+        """定时/手动共用的 SQL 同步执行（Q5 全自动；护栏触发返回 aborted 状态）。"""
+        runtime = SqlSyncRuntime(sqlsync_cfg, on_event=emit)
+        report = runtime.apply()
+        emit("sqlsync_done", {
+            "status": report.status, "run_id": report.run_id,
+            "error": report.error, "guard": report.guard_summary,
+            "executed": report.executed, "total": report.total,
+        })
+        return report
+
     def _run_update_sync() -> dict:
-        """更新前先重新检查（§2），再执行编排。"""
+        """更新链路：sqlsync → server → 前端（Q9 后 SQL 由同步域承担）。"""
+        items: list[dict] = []
+        summary = {"success": 0, "failed": 0, "rolled_back": 0}
+
+        if sqlsync_cfg is not None:
+            emit("update_progress", {"item": "(sqlsync)", "type": "sqlsync", "stage": "start"})
+            try:
+                rep = _run_sqlsync_once()
+                result = "success" if rep.status == "success" else "failed"
+                items.append(_sqlsync_item(result, rep.error, rep.status, rep.run_id))
+            except Exception as e:  # sqlsync 域故障不阻断制品更新
+                log.exception("sqlsync 执行异常")
+                items.append(_sqlsync_item("failed", f"{type(e).__name__}: {e}"))
+            summary[items[-1]["result"]] += 1
+            emit("update_progress", {"item": "(sqlsync)", "stage": "done", "record": items[-1]})
+
         plan = checker.run()
         runner = UpdateRunner(cfg, state=getattr(checker, "state", None), on_event=emit)
-        return runner.run(plan)
+        report = runner.run(plan)
+        for key in summary:
+            summary[key] += report["summary"].get(key, 0)
+        report["items"] = items + report["items"]
+        report["summary"] = summary
+        return report
 
     @app.websocket("/api/v1/events")
     async def events(ws: WebSocket, token: str = Query("")):
