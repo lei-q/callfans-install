@@ -39,22 +39,27 @@ def check_cloud_integrity(cloud_tables_present: set[str],
 
 def check_plan_scale(statement_count: int, affected_tables: set[str],
                      manifest: list[TableRule], policy: SyncPolicy) -> list[GuardViolation]:
-    """G2：漂移规模超阈值 → 疑似云库被大改，中止。"""
+    """G2：漂移规模超阈值 → 疑似云库被大改，中止。
+
+    比例闸门仅在清单 ≥ 10 张表时生效：小清单（如新客户 2-3 张表）比例无
+    统计意义，由语句数上限 + G3/G4/G5 兜底（2026-09-20 实测修订）。
+    """
     violations: list[GuardViolation] = []
     if statement_count > policy.max_statements:
         violations.append(GuardViolation(
             "G2", f"变更语句数 {statement_count} 超过上限 {policy.max_statements}",
             tables=sorted(affected_tables),
         ))
-    total = max(len(manifest), 1)
-    ratio = len(affected_tables) / total
-    if ratio > policy.max_table_ratio:
-        violations.append(GuardViolation(
-            "G2",
-            f"涉及表 {len(affected_tables)}/{total}（{ratio:.0%}）超过比例上限 "
-            f"{policy.max_table_ratio:.0%}",
-            tables=sorted(affected_tables),
-        ))
+    total = len(manifest)
+    if total >= 10:
+        ratio = len(affected_tables) / total
+        if ratio > policy.max_table_ratio:
+            violations.append(GuardViolation(
+                "G2",
+                f"涉及表 {len(affected_tables)}/{total}（{ratio:.0%}）超过比例上限 "
+                f"{policy.max_table_ratio:.0%}",
+                tables=sorted(affected_tables),
+            ))
     return violations
 
 

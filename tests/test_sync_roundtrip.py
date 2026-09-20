@@ -137,3 +137,55 @@ def test_roundtrip_diff_apply_rediff_empty(sandbox):
     # roundtrip 验收：再 diff 必须为空
     after = diff_schemas(reflect_metadata(cloud), reflect_metadata(local), manifest)
     assert after.changes == [], f"roundtrip 非空: {after.summary()}"
+
+
+CLOUD_DATA = [
+    "INSERT INTO std.sys_dict (code, value) VALUES ('c1','v1'),('c2','v2'),('c4','v4')",
+    "INSERT INTO std.sys_config (k, label, remark) VALUES ('a','L1','r1'),('b','L2',NULL)",
+]
+# 本地现状：c1 旧值、c3 多余行；sys_config 已随结构同步建好（空表 → 种子）
+LOCAL_DATA = [
+    "INSERT INTO biz.sys_dict (code, value) VALUES ('c1','OLD'),('c3','local-only')",
+]
+
+
+def test_data_roundtrip_plan_apply_replan_empty(sandbox):
+    """M3 闸门：数据层 roundtrip——plan → apply → 再 plan 零变更。"""
+    from sqlalchemy import text
+
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    # 依赖上一测试的结构同步结果（模块级 fixture 内顺序执行）
+    _exec_sql(cloud_port, CLOUD_DATA)
+    _exec_sql(local_port, LOCAL_DATA)
+
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", "biz"),
+        policy=SyncPolicy(),
+    )
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    manifest = [
+        TableRule(name="sys_config", data=True, pk="id"),
+        TableRule(name="sys_dict", data=True, pk="code"),
+    ]
+    plan = build_plan(cfg, cloud, local, manifest)
+    assert not plan.fatal, plan.report_text()
+    # 检出的数据漂移：c1 旧值→update；c3 本地多余→delete；
+    # c2/c4 云库新增→insert ×2；sys_config 种子 2 行
+    dict_t = next(d for d in plan.data_tables if d.table == "sys_dict")
+    assert (dict_t.inserts, dict_t.updates, dict_t.deletes) == (2, 1, 1)
+    config_t = next(d for d in plan.data_tables if d.table == "sys_config")
+    assert config_t.inserts == 2
+
+    with local.begin() as conn:
+        for stmt in plan.up_statements():
+            conn.execute(text(stmt))
+
+    again = build_plan(cfg, cloud, local, manifest)
+    assert again.statement_count == 0, f"数据 roundtrip 非空:\n{again.report_text()}"
+    assert again.checksum_cloud == plan.checksum_cloud  # 校验和稳定
+

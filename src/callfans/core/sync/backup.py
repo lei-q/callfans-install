@@ -10,27 +10,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
+
+from .sqlgen import sql_literal as _literal  # 兼容既有测试引用
 
 _IDENT_RE = re.compile(r"^[A-Za-z0-9_$]+$")
 _BATCH = 500
-
-
-def _literal(v) -> str:
-    """dump 用的 SQL 字面量（保守转义）。"""
-    if v is None:
-        return "NULL"
-    if isinstance(v, bool):
-        return "1" if v else "0"
-    if isinstance(v, (int, float)):
-        return str(v)
-    if isinstance(v, bytes):
-        return f"X'{v.hex()}'"
-    if isinstance(v, (datetime, date)):
-        return f"'{v.isoformat(sep=' ')}'"
-    s = str(v).replace("\\", "\\\\").replace("'", "''")
-    return f"'{s}'"
 
 
 class BackupError(RuntimeError):

@@ -38,6 +38,7 @@ class SchemaChange:
     ddl: str
     destructive: bool = False
     detail: str = ""
+    down_ddl: str = ""  # 逆操作（drop_table/drop_column 数据恢复依赖备份）
 
 
 @dataclass
@@ -110,10 +111,11 @@ def diff_schemas(cloud_md, local_md, manifest: list[TableRule],
         if cloud_t is None:
             continue  # 云库缺表由 G3 在更早阶段拦截
         if local_t is None:
+            create_ddl = str(CreateTable(cloud_t).compile(dialect=_DIALECT))
             result.changes.append(SchemaChange(
-                "add_table", rule.name,
-                str(CreateTable(cloud_t).compile(dialect=_DIALECT)),
+                "add_table", rule.name, create_ddl,
                 detail="含主键；二级索引随后单独建",
+                down_ddl=f"DROP TABLE IF EXISTS {_quote(rule.name)};",
             ))
             for idx in sorted(cloud_t.indexes, key=lambda i: i.name or ""):
                 result.changes.append(_index_change("add_index", rule.name, idx))
@@ -126,6 +128,7 @@ def diff_schemas(cloud_md, local_md, manifest: list[TableRule],
             "drop_table", name,
             str(DropTable(local_md.tables[name]).compile(dialect=_DIALECT)),
             destructive=True,
+            down_ddl=f"-- {name} 表数据恢复依赖备份回灌",
         ))
     return result
 
@@ -141,6 +144,7 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
             result.changes.append(SchemaChange(
                 "add_column", rule.name,
                 f"ALTER TABLE {_quote(rule.name)} ADD COLUMN {_col_ddl(col)}",
+                down_ddl=f"ALTER TABLE {_quote(rule.name)} DROP COLUMN {_quote(name)};",
             ))
         elif column_fingerprint(col) != column_fingerprint(local_cols[name]):
             _, c_type, _, c_def, _ = column_fingerprint(col)
@@ -156,12 +160,17 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
                 "modify_column", rule.name,
                 f"ALTER TABLE {_quote(rule.name)} MODIFY COLUMN {_col_ddl(col)}",
                 detail="，".join(detail) or "指纹差异",
+                down_ddl=f"ALTER TABLE {_quote(rule.name)} MODIFY COLUMN "
+                         f"{_col_ddl(local_cols[name])};",
             ))
     for name in sorted(set(local_cols) - set(cloud_cols)):
         result.changes.append(SchemaChange(
             "drop_column", rule.name,
             f"ALTER TABLE {_quote(rule.name)} DROP COLUMN {_quote(name)}",
             destructive=True,
+            detail="列数据恢复依赖备份",
+            down_ddl=f"ALTER TABLE {_quote(rule.name)} ADD COLUMN "
+                     f"{_col_ddl(local_cols[name])};",
         ))
     # ---- 二级索引 ----（含忽略列的索引跳过；ignore_idx 名单跳过）
     def _usable(side_t):
@@ -193,19 +202,28 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
             parts.append("DROP PRIMARY KEY")
         if cloud_pk:
             parts.append("ADD PRIMARY KEY (" + ", ".join(_quote(c) for c in cloud_pk) + ")")
+        down_parts = []
+        if cloud_pk:
+            down_parts.append("DROP PRIMARY KEY")
+        if local_pk:
+            down_parts.append("ADD PRIMARY KEY (" + ", ".join(_quote(c) for c in local_pk) + ")")
         if parts:
             result.changes.append(SchemaChange(
                 "change_pk", rule.name,
                 f"ALTER TABLE {_quote(rule.name)} " + ", ".join(parts),
                 destructive=True,
                 detail=f"{local_pk or '无'}→{cloud_pk or '无'}",
+                down_ddl=f"ALTER TABLE {_quote(rule.name)} " + ", ".join(down_parts) + ";",
             ))
 
 
 def _index_change(kind: str, table: str, idx, destructive: bool = False) -> SchemaChange:
     if kind == "add_index":
         ddl = str(CreateIndex(idx).compile(dialect=_DIALECT))
+        down = str(DropIndex(idx).compile(dialect=_DIALECT))
     else:
         ddl = str(DropIndex(idx).compile(dialect=_DIALECT))
+        down = str(CreateIndex(idx).compile(dialect=_DIALECT))
     cols = ", ".join(c.name for c in idx.columns)
-    return SchemaChange(kind, table, ddl, destructive=destructive, detail=cols)
+    return SchemaChange(kind, table, ddl + ";", destructive=destructive, detail=cols,
+                        down_ddl=down + ";")
