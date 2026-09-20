@@ -1,5 +1,8 @@
-"""更新编排（§6）：preflight → SQL → server → 前端（Q11），逐项串行、单项失败不阻断，
+"""更新编排（§6）：preflight → server → 前端，逐项串行、单项失败不阻断，
 结果逐条写 update_history.jsonl 并通过 on_event 推进度。
+
+Q9（2026-09-20）：SQL 制品流移除，数据库更新由 sqlsync 域
+（callfans sqlsync / core/sync）承担。
 """
 
 from __future__ import annotations
@@ -10,20 +13,20 @@ from datetime import datetime, timezone
 from ...config import Config
 from ...paths import history_file
 from .. import history
-from ..models import TYPE_FRONTEND, TYPE_SERVER, TYPE_SQL, PendingItem, UpdatePlan
+from ..models import TYPE_FRONTEND, TYPE_SERVER, PendingItem, UpdatePlan
 from .frontend_updater import FrontendUpdater
 from .preflight import PreflightError, preflight
 from .server_updater import ServerUpdater
-from .sql_updater import SqlUpdater
 
 log = logging.getLogger(__name__)
 
-TYPE_ORDER = {TYPE_SQL: 0, TYPE_SERVER: 1, TYPE_FRONTEND: 2}
+# Q9（2026-09-20）：sql 制品流移除，SQL 更新由 sqlsync 域承担
+TYPE_ORDER = {TYPE_SERVER: 0, TYPE_FRONTEND: 1}
 
 
 class UpdateRunner:
     def __init__(self, cfg: Config, state=None, docker=None, puller=None,
-                 on_event=None, mysql_connect=None, updaters: dict | None = None,
+                 on_event=None, updaters: dict | None = None,
                  history_path=None, run_preflight: bool = True):
         from .docker_cli import DockerCLI
 
@@ -32,7 +35,6 @@ class UpdateRunner:
         self.docker = docker or DockerCLI()
         self.puller = puller
         self.on_event = on_event or (lambda *a, **k: None)
-        self.mysql_connect = mysql_connect
         self._updaters = updaters  # 测试注入 {type: 实例}
         self.history_path = history_path or history_file()
         self.run_preflight = run_preflight
@@ -40,8 +42,6 @@ class UpdateRunner:
     def _updater_for(self, type_: str):
         if self._updaters is not None:
             return self._updaters[type_]
-        if type_ == TYPE_SQL:
-            return SqlUpdater(self.cfg, self.state, self.puller, self.on_event, self.mysql_connect)
         if type_ == TYPE_SERVER:
             return ServerUpdater(self.cfg, self.state, self.docker, self.on_event)
         if type_ == TYPE_FRONTEND:
@@ -62,7 +62,7 @@ class UpdateRunner:
             return report
         if self.run_preflight:
             try:
-                preflight(self.cfg, plan, docker=self.docker, mysql_connect=self.mysql_connect)
+                preflight(self.cfg, plan, docker=self.docker)
             except PreflightError as e:
                 report["preflight_error"] = str(e)
                 log.error("preflight 失败，未执行任何更新: %s", e)

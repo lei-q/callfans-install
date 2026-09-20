@@ -160,42 +160,30 @@ def test_frontend_first_install_no_state(tmp_path):
     assert item.old is None and item.new == "20260912132921-123a066"
 
 
-# ---------- sql ----------
+# ---------- sql（Q9：制品流由 sqlsync 域替代，仓库一律忽略） ----------
 
 
-def test_sql_backlog_ascending(tmp_path):
+def test_sql_repo_ignored_entirely(tmp_path):
+    """type=sql 仓库不再产生待更新项，无论本地记账状态如何。"""
     state = StateStore(tmp_path / "state.json")
-    state.set("sql", {"callfans/db": {"applied": [
-        {"tag": "20260901102030-abc1234", "digest": "sha256:1"},
-    ]}})
-    harbor = FakeHarbor(repos={"callfans/db": [
-        mk("callfans/db", "20260901102030-abc1234", "2026-09-01T10:20:30Z", "sha256:1",
-           ann={KEY_TYPE: TYPE_SQL, KEY_CHANGELOG: "已执行"}),
-        mk("callfans/db", "20260912132921-123a066", "2026-09-12T13:29:21Z", "sha256:3",
-           ann={KEY_TYPE: TYPE_SQL, KEY_CHANGELOG: "加表"}),
-        mk("callfans/db", "20260910150000-def5678", "2026-09-10T15:00:00Z", "sha256:2",
-           ann={KEY_TYPE: TYPE_SQL, KEY_CHANGELOG: "加列"}),
-    ]})
+    harbor = FakeHarbor(repos={
+        "callfans/sql_diff": [
+            mk("callfans/sql_diff", "20260917140820-c24db61a", "2026-09-17T14:08:20Z",
+               ann={KEY_TYPE: TYPE_SQL, KEY_CHANGELOG: "加表"}),
+        ],
+        "callfans/web": [mk("callfans/web", "20260917135419-33cacef", "2026-09-17T13:54:19Z",
+                            ann={KEY_TYPE: TYPE_FRONTEND})],
+    })
     plan = run_checker(harbor, state=state)
-    item = plan.pending[0]
-    assert item.type == TYPE_SQL
-    assert item.old == "20260901102030-abc1234"
-    # 未执行的按时间升序
-    assert item.new == ["20260910150000-def5678", "20260912132921-123a066"]
-    assert item.changelog["20260910150000-def5678"] == "加列"
+    assert [p.name for p in plan.pending] == ["callfans/web"]  # sql_diff 不在列
 
 
-def test_sql_all_applied_no_pending(tmp_path):
-    state = StateStore(tmp_path / "state.json")
-    state.set("sql", {"callfans/db": {"applied": [
-        {"tag": "20260901102030-abc1234", "digest": "sha256:1"},
-        {"tag": "20260912132921-123a066", "digest": "sha256:2"},
-    ]}})
-    harbor = FakeHarbor(repos={"callfans/db": [
-        mk("callfans/db", "20260901102030-abc1234", "2026-09-01T10:20:30Z", "sha256:1", ann={KEY_TYPE: TYPE_SQL}),
-        mk("callfans/db", "20260912132921-123a066", "2026-09-12T13:29:21Z", "sha256:2", ann={KEY_TYPE: TYPE_SQL}),
-    ]})
-    plan = run_checker(harbor, state=state)
+def test_server_label_declares_sql_ignored(tmp_path):
+    """server 路径下 Label 声明为 sql 的仓库同样忽略。"""
+    harbor = FakeHarbor(repos={"callfans/db_migrate": [
+        mk("callfans/db_migrate", "20260912132921-123a066", "2026-09-12T13:29:21Z"),
+    ]}, labels={("callfans/db_migrate", "20260912132921-123a066"): {KEY_TYPE: TYPE_SQL}})
+    plan = run_checker(harbor, state=StateStore(tmp_path / "state.json"))
     assert plan.pending == []
 
 

@@ -22,6 +22,8 @@ from .service.runtime import read_runtime
 app = typer.Typer(no_args_is_help=True, help="callfans 镜像更新器")
 service_app = typer.Typer(help="服务安装管理（Linux systemd 用户级）")
 app.add_typer(service_app, name="service")
+sqlsync_app = typer.Typer(help="云库 → B 库结构与配置同步")
+app.add_typer(sqlsync_app, name="sqlsync")
 
 EnvOpt = typer.Option(Path(".env"), "--env", help=".env 配置路径")
 
@@ -236,6 +238,104 @@ def service_uninstall() -> None:
         typer.secho(str(e), fg=typer.colors.RED)
         raise typer.Exit(1)
     typer.secho("已卸载", fg=typer.colors.GREEN)
+
+
+def _sync_runtime(env: Path):
+    """sqlsync 独立入口：不要求 Harbor 配置，仅加载 .env 后建运行时。"""
+    from dotenv import load_dotenv
+
+    if env.exists():
+        load_dotenv(env)
+    from .core.sync.config import CloudSyncConfig, SyncConfigError
+    from .core.sync.runtime import SqlSyncRuntime
+
+    try:
+        return SqlSyncRuntime(CloudSyncConfig.from_env())
+    except SyncConfigError as e:
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+
+@sqlsync_app.command("status")
+def sqlsync_status(env: Path = EnvOpt) -> None:
+    """双库连通性、上次同步、当前漂移概要。"""
+    rt = _sync_runtime(env)
+    try:
+        st = rt.status()
+    except Exception as e:
+        typer.secho(f"status 失败: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.echo(f"云库: {st['cloud']}｜B 库: {st['local']}")
+    last = st.get("last_run")
+    if last:
+        typer.echo(f"上次同步: {last.get('last_status')} run={last.get('last_run_id')} "
+                   f"语句 {last.get('executed')}/{last.get('total')}")
+    else:
+        typer.echo("上次同步: 无")
+    drift = st.get("drift", {})
+    if "error" in drift:
+        typer.secho(f"漂移检查失败: {drift['error']}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    fatal = "⚠ 护栏拦截" if drift.get("fatal_guard") else "护栏通过"
+    typer.echo(f"当前漂移: 语句 {drift.get('statements', 0)}｜涉及表 "
+               f"{drift.get('tables', 0)}｜{fatal}｜校验和 {drift.get('checksum_cloud')}")
+
+
+@sqlsync_app.command("plan")
+def sqlsync_plan(env: Path = EnvOpt) -> None:
+    """生成同步计划（只读，输出 Up/Down 与影响评估）。"""
+    rt = _sync_runtime(env)
+    try:
+        plan = rt.build()
+    except Exception as e:
+        typer.secho(f"plan 失败: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    rt._save_artifacts(plan)
+    typer.echo(plan.report_text())
+    if plan.fatal:
+        typer.secho("护栏拦截：apply 需 --force（越过行为全量审计）", fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
+
+
+@sqlsync_app.command("apply")
+def sqlsync_apply(
+    env: Path = EnvOpt,
+    force: bool = typer.Option(False, "--force", help="越过 fatal 护栏（全量审计）"),
+) -> None:
+    """执行同步（备份先行；失败可用 rollback 或重跑收敛）。"""
+    rt = _sync_runtime(env)
+    try:
+        report = rt.apply(force=force)
+    except Exception as e:
+        typer.secho(f"apply 失败: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    color = {"success": typer.colors.GREEN}.get(report.status, typer.colors.RED)
+    typer.secho(f"[{report.status}] 语句 {report.executed}/{report.total} "
+                f"run={report.run_id}", fg=color)
+    if report.error:
+        typer.echo(report.error)
+    if report.status != "success":
+        raise typer.Exit(1)
+
+
+@sqlsync_app.command("rollback")
+def sqlsync_rollback(
+    env: Path = EnvOpt,
+    run_id: str = typer.Option(..., "--run-id", help="要回滚的同步 run_id"),
+) -> None:
+    """按 run_id 执行 Down 脚本（备份依赖项见语句注释）。"""
+    rt = _sync_runtime(env)
+    try:
+        report = rt.rollback(run_id)
+    except FileNotFoundError as e:
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.secho(f"rollback 失败: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.secho(f"[{report.status}] 语句 {report.executed}/{report.total}", fg=typer.colors.YELLOW)
+    if report.error:
+        typer.echo(report.error)
 
 
 def main() -> None:

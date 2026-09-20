@@ -75,8 +75,12 @@ class Checker:
             declared = next(
                 (t.annotations.get(KEY_TYPE) for t in tags if t.annotations.get(KEY_TYPE)), None
             )
-            if declared in (TYPE_FRONTEND, TYPE_SQL):
+            if declared == TYPE_FRONTEND:
                 item = self._state_repo(repo, declared, tags)
+            elif declared == TYPE_SQL:
+                # Q9（2026-09-20）：sql 制品流由 sqlsync 域（云库→B库同步）替代
+                log.debug("sql 仓库 %s 由 sqlsync 域处理，制品流忽略", repo)
+                continue
             else:
                 item = self._server_repo(repo, tags, local if docker_ok else None)
             if item is not None:
@@ -115,9 +119,11 @@ class Checker:
             log.warning("读取 %s:%s 的 Label 失败: %s", repo, cand.tag, e)
             labels = {}
         label_type = labels.get(KEY_TYPE)
-        if label_type in (TYPE_FRONTEND, TYPE_SQL):
-            # Label 声明为前端/SQL（罕见）：按 state 记账分支处理
+        if label_type == TYPE_FRONTEND:
+            # Label 声明为前端（罕见）：按 state 记账分支处理
             return self._state_repo(repo, label_type, tags)
+        if label_type == TYPE_SQL:
+            return None  # Q9：由 sqlsync 域处理
         return PendingItem(
             name=repo,
             type=TYPE_SERVER,

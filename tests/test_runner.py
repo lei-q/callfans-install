@@ -35,43 +35,37 @@ def make_item(type_, name):
     return PendingItem(name=name, type=type_, old="t-old", new="t-new")
 
 
-def test_order_sql_server_frontend(tmp_path):
-    stubs = {"server": StubUpdater(), "frontend": StubUpdater(), "sql": StubUpdater()}
+def test_order_server_before_frontend(tmp_path):
+    stubs = {"server": StubUpdater(), "frontend": StubUpdater()}
     events: list = []
     runner = UpdateRunner(make_cfg(), updaters=stubs, history_path=tmp_path / "h.jsonl",
                           run_preflight=False,
                           on_event=lambda e, d: events.append((e, d)))
     report = runner.run(plan_of(make_item("frontend", "callfans/web"),
-                                make_item("server", "callfans/api"),
-                                make_item("sql", "callfans/db")))
-    assert [i.type for i in stubs["sql"].items] == ["sql"]
-    assert [i.type for i in stubs["server"].items] == ["server"]
-    assert [i.type for i in stubs["frontend"].items] == ["frontend"]
-    # 执行顺序也体现在 report.items
-    assert [r["type"] for r in report["items"]] == ["sql", "server", "frontend"]
-    assert report["summary"] == {"success": 3, "failed": 0, "rolled_back": 0}
-    # 历史逐条落盘
+                                make_item("server", "callfans/api")))
+    # 执行顺序：server 先于前端（Q9 后无 SQL 项）
+    assert [r["type"] for r in report["items"]] == ["server", "frontend"]
+    assert report["summary"] == {"success": 2, "failed": 0, "rolled_back": 0}
     lines = (tmp_path / "h.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 2
     # 事件流：update_begin（含总数，UI 进度条分母）→ 各项 → update_done
     assert events[0][0] == "update_begin"
-    assert events[0][1]["total"] == 3
+    assert events[0][1]["total"] == 2
     assert events[-1][0] == "update_done"
     stage_events = [e for e, d in events if e == "update_progress" and d.get("stage") == "done"]
-    assert len(stage_events) == 3
+    assert len(stage_events) == 2
 
 
 def test_single_failure_does_not_block(tmp_path):
-    stubs = {"sql": StubUpdater("failed"), "server": StubUpdater(), "frontend": StubUpdater()}
+    stubs = {"server": StubUpdater("failed"), "frontend": StubUpdater()}
     runner = UpdateRunner(make_cfg(), updaters=stubs, history_path=tmp_path / "h.jsonl",
                           run_preflight=False)
-    report = runner.run(plan_of(make_item("sql", "callfans/db"),
-                                make_item("server", "callfans/api"),
+    report = runner.run(plan_of(make_item("server", "callfans/api"),
                                 make_item("frontend", "callfans/web")))
-    assert len(report["items"]) == 3
+    assert len(report["items"]) == 2
     assert report["summary"]["failed"] == 1
-    assert report["summary"]["success"] == 2
-    assert len(stubs["server"].items) == 1  # 失败后其他项照常执行
+    assert report["summary"]["success"] == 1
+    assert len(stubs["frontend"].items) == 1  # 失败后其他项照常执行
 
 
 def test_empty_plan_no_preflight(tmp_path):

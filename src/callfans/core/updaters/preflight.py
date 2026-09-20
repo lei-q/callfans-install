@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from ...config import Config
-from ..models import TYPE_FRONTEND, TYPE_SERVER, TYPE_SQL, UpdatePlan
+from ..models import TYPE_FRONTEND, TYPE_SERVER, UpdatePlan
 from .compose_env import (
     extract_tag_var, find_image_template, iter_image_templates, read_env,
     read_text_loose, vars_in,
@@ -16,15 +16,13 @@ from .docker_cli import DockerCLI, DockerError
 
 _MIN_FREE_BYTES = 100 * 1024 * 1024  # 100MB
 
-_MYSQL_KEYS = ("mysql_host", "mysql_user", "mysql_password")  # mysql_database 可选（sql 内 USE 指定）
 
 
 class PreflightError(RuntimeError):
     pass
 
 
-def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None,
-              mysql_connect=None) -> None:
+def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None) -> None:
     if not plan.pending:
         return
     errors: list[str] = []
@@ -75,21 +73,6 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None,
                             )
                 except Exception as e:
                     errors.append(f"docker/compose 不可用: {e}")
-
-    if TYPE_SQL in types:
-        missing = [k for k in _MYSQL_KEYS if not getattr(cfg, k)]
-        if missing:
-            errors.append(f"MySQL 配置缺失: {', '.join(missing)}")
-        else:
-            try:
-                if mysql_connect is not None:
-                    conn = mysql_connect()
-                else:
-                    from .sql_updater import mysql_connect_from_cfg
-                    conn = mysql_connect_from_cfg(cfg)
-                conn.close()
-            except Exception as e:
-                errors.append(f"MySQL 不可达: {e}")
 
     if TYPE_FRONTEND in types:
         if not cfg.frontend_output_dir:
