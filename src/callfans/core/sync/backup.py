@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .sqlgen import sql_literal as _literal  # 兼容既有测试引用
 
-_IDENT_RE = re.compile(r"^[A-Za-z0-9_$]+$")
+_IDENT_RE = re.compile(r"^[A-Za-z0-9_$-]+$")  # 库名含连字符（callfans-standard）
 _BATCH = 500
 
 

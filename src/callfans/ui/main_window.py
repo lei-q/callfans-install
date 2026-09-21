@@ -131,6 +131,8 @@ class MainWindow(QMainWindow):
             lambda: self._show_changelog(self.table.currentRow())
         )
         self.table.itemChanged.connect(self._on_item_changed)
+        header.sectionClicked.connect(
+            lambda section: self._toggle_check_all() if section == 0 else None)
         splitter.addWidget(self.table)
 
         self.changelog_view = QPlainTextEdit()
@@ -228,27 +230,39 @@ class MainWindow(QMainWindow):
     def _fill_table(self, pending: dict) -> None:
         items = pending.get("pending") or []
         self._current_pending = items
+        plan_id = pending.get("checked_at")
+        if plan_id != getattr(self, "_filled_plan_id", None):
+            # 新一轮计划：重置勾选状态（默认全选）；旧名称的勾选记忆清除
+            self._filled_plan_id = plan_id
+            self._checked_state = {p.get("name", ""): True for p in items}
+        self._checked_state = getattr(self, "_checked_state", {})
         self.table.blockSignals(True)  # 填充期间不触发 itemChanged
         try:
             self.table.setRowCount(len(items))
             for row, p in enumerate(items):
                 new = p.get("new")
                 new_text = new if isinstance(new, str) else " → ".join(new or [])
-                # 勾选列（默认全选）
+                name = p.get("name", "")
+                state = self._checked_state.get(name, True)
+                # 勾选列（保持用户勾选状态；新条目默认选）
                 chk = QTableWidgetItem()
                 chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
                              | Qt.ItemFlag.ItemIsSelectable)
-                chk.setCheckState(Qt.CheckState.Checked)
+                chk.setCheckState(Qt.CheckState.Checked if state else Qt.CheckState.Unchecked)
+                chk.setToolTip("勾选/取消此项更新；点击表头 ✓ 一键全选/全不选")
                 self.table.setItem(row, 0, chk)
                 for col, text in enumerate([
-                    p.get("type", ""), p.get("name", ""), p.get("old") or "未安装",
+                    p.get("type", ""), name, p.get("old") or "未安装",
                     new_text, p.get("alias") or "",
                 ], start=1):
                     item = QTableWidgetItem(str(text))
                     item.setToolTip(str(text))  # 内容被遮挡时悬停显示全文（#4）
                     self.table.setItem(row, col, item)
-            self.table.resizeColumnsToContents()   # 列宽自适应（#4）
             self.table.resizeRowsToContents()
+            if plan_id != getattr(self, "_sized_plan_id", None):
+                # 列宽自适应仅在计划变化时执行，不与用户手动拖动打架（#4 修正）
+                self._auto_fit_columns()
+                self._sized_plan_id = plan_id
         finally:
             self.table.blockSignals(False)
         if self.table.currentRow() >= len(items):
@@ -256,9 +270,47 @@ class MainWindow(QMainWindow):
             self.changelog_view.clear()
         self._update_update_button()
 
+    def _auto_fit_columns(self) -> None:
+        """列宽自适应：内容宽度 + 表头宽度取大者，留边距，设上下限。"""
+        model = self.table.model()
+        header = self.table.horizontalHeader()
+        for col in range(self.table.columnCount()):
+            w = header.sizeHintForColumn(col) if col else 28
+            header_w = header.fontMetrics().horizontalAdvance(
+                self.table.horizontalHeaderItem(col).text() or "") + 34
+            w = max(w, header_w) + 14
+            w = min(w, 420)
+            if col == 0:
+                w = 36
+            self.table.setColumnWidth(col, int(w))
+
+    def _toggle_check_all(self) -> None:
+        """表头 ✓ 列点击：一键全选/全不选（#3）。"""
+        names = [p.get("name", "") for p in getattr(self, "_current_pending", [])]
+        if not names:
+            return
+        all_checked = all(self._checked_state.get(n, True) for n in names)
+        target = not all_checked
+        self.table.blockSignals(True)
+        try:
+            for row, name in enumerate(names):
+                self._checked_state[name] = target
+                chk = self.table.item(row, 0)
+                if chk is not None:
+                    chk.setCheckState(
+                        Qt.CheckState.Checked if target else Qt.CheckState.Unchecked)
+        finally:
+            self.table.blockSignals(False)
+        self.log("✓ 已全选" if target else "✓ 已全不选")
+        self._update_update_button()
+
     def _on_item_changed(self, item) -> None:
-        """勾选状态变化 → 更新"立即更新"可用性（#3）。"""
+        """勾选状态变化 → 记忆状态并更新"立即更新"可用性（#3）。"""
         if item.column() == 0:
+            name_item = self.table.item(item.row(), 2)
+            if name_item is not None:
+                self._checked_state[name_item.text()] = (
+                    item.checkState() == Qt.CheckState.Checked)
             self._update_update_button()
 
     def _checked_names(self) -> list[str]:
@@ -296,25 +348,33 @@ class MainWindow(QMainWindow):
         self.changelog_view.setPlainText(text)
 
     def _export_selected_sql(self) -> None:
-        """导出选中行的变更 SQL 到 .sql 文件（#2）。"""
-        row = self.table.currentRow()
-        pending = getattr(self, "_current_pending", [])
-        if not (0 <= row < len(pending)):
-            QMessageBox.information(self, "导出 SQL", "请先在列表中选中一条待更新项")
-            return
-        sql = pending[row].get("sql") or []
-        if not sql:
-            QMessageBox.information(self, "导出 SQL", "选中项没有数据库变更 SQL（仅 sqlsync 条目可导出）")
-            return
-        default = f"callfans-sqlsync-{pending[row].get('name', 'x').strip('()')}.sql"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出变更 SQL", default, "SQL 文件 (*.sql)")
-        if not path:
-            return
-        from pathlib import Path as _P
+        """导出变更 SQL 到 .sql 文件（#2）。每个分支都有日志，绝不静默。"""
+        try:
+            pending = getattr(self, "_current_pending", []) or []
+            row = self.table.currentRow()
+            if not (0 <= row < len(pending)):
+                # 未选中：若恰有唯一 sqlsync 条目则自动选用
+                sqlsync_rows = [i for i, p in enumerate(pending) if p.get("sql")]
+                if len(sqlsync_rows) == 1:
+                    row = sqlsync_rows[0]
+                else:
+                    self.log("导出 SQL：请先在列表中选中一条待更新项")
+                    return
+            sql = pending[row].get("sql") or []
+            if not sql:
+                self.log("导出 SQL：选中项没有数据库变更 SQL（仅 sqlsync 条目可导出）")
+                return
+            default = f"callfans-sqlsync-{pending[row].get('name', 'x').strip('()')}.sql"
+            path, _ = QFileDialog.getSaveFileName(
+                self, "导出变更 SQL", default, "SQL 文件 (*.sql);;所有文件 (*)")
+            if not path:
+                return
+            from pathlib import Path as _P
 
-        _P(path).write_text("\n".join(sql) + "\n", encoding="utf-8")
-        self.log(f"已导出 {len(sql)} 条 SQL → {path}")
+            _P(path).write_text("\n".join(sql) + "\n", encoding="utf-8")
+            self.log(f"已导出 {len(sql)} 条 SQL → {path}")
+        except Exception as e:  # 对话框异常也不静默
+            self.log(f"导出 SQL 失败: {type(e).__name__}: {e}")
 
     # ---------- 动作 ----------
 
