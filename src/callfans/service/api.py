@@ -269,7 +269,10 @@ def create_app(
         }
 
     def _run_sqlsync_once() -> dict:
-        """定时/手动共用的 SQL 同步执行（Q5 全自动；护栏触发返回 aborted 状态）。"""
+        """定时/手动共用的 SQL 同步执行（护栏触发返回 aborted 状态）。"""
+        if state.updating or state.busy:
+            log.info("更新/检查进行中，跳过本轮定时 sqlsync（互斥）")
+            return None
         runtime = SqlSyncRuntime(sqlsync_cfg, on_event=emit)
         report = runtime.apply()
         emit("sqlsync_done", {

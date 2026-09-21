@@ -195,9 +195,16 @@ class MainWindow(QMainWindow):
                   self._apply_state, self._refresh_failed)
 
     def _refresh_failed(self, error: str) -> None:
-        """服务不可达：尝试自拉起（Windows 模式 A），并给出状态提示。"""
+        """服务不可达：尝试自拉起（Windows 模式 A），并给出状态提示。
+
+        更新进行中不拉起——重操作期间事件循环响应慢会被误判为服务挂了，
+        重复拉起第二个服务反而制造连接混乱（v0.4.3 实测教训）。
+        """
         from .bootstrap import ensure_service_running
 
+        if getattr(self, "_busy", False):
+            self.label_status.setText("更新进行中（服务响应缓慢，属正常）…")
+            return
         self.label_status.setText("服务未运行，正在尝试启动…")
         self._spawn_state = getattr(self, "_spawn_state", {})
         ensure_service_running(self._spawn_state)
