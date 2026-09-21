@@ -271,18 +271,33 @@ class MainWindow(QMainWindow):
         self._update_update_button()
 
     def _auto_fit_columns(self) -> None:
-        """列宽自适应：内容宽度 + 表头宽度取大者，留边距，设上下限。"""
-        model = self.table.model()
+        """列宽自适应：以内容宽为基础，整体等比放大铺满表格显示区（#4 修正方向）。
+
+        - 内容不足一屏 → 按比例拉伸各列填满（勾选列固定 36px 不参与）
+        - 内容超出一屏 → 保持内容宽，出横向滚动条
+        - 仍可手动拖动；窗口尺寸变化时重新铺满
+        """
         header = self.table.horizontalHeader()
-        for col in range(self.table.columnCount()):
-            w = header.sizeHintForColumn(col) if col else 28
+        col_count = self.table.columnCount()
+        base: list[int] = []
+        for col in range(col_count):
+            if col == 0:
+                base.append(36)
+                continue
+            w = header.sizeHintForColumn(col)
             header_w = header.fontMetrics().horizontalAdvance(
                 self.table.horizontalHeaderItem(col).text() or "") + 34
-            w = max(w, header_w) + 14
-            w = min(w, 420)
-            if col == 0:
-                w = 36
-            self.table.setColumnWidth(col, int(w))
+            base.append(min(max(w, header_w) + 14, 600))
+        available = self.table.viewport().width()
+        extra = available - 36 - 2  # 边框余量
+        scalable = sum(base[1:])
+        if scalable > 0 and extra > scalable:
+            scale = extra / scalable
+            widths = [36] + [int(w * scale) for w in base[1:]]
+        else:
+            widths = base
+        for col, w in enumerate(widths):
+            self.table.setColumnWidth(col, w)
 
     def _toggle_check_all(self) -> None:
         """表头 ✓ 列点击：一键全选/全不选（#3）。"""
@@ -303,6 +318,12 @@ class MainWindow(QMainWindow):
             self.table.blockSignals(False)
         self.log("✓ 已全选" if target else "✓ 已全不选")
         self._update_update_button()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # 窗口尺寸变化 → 列宽重新铺满显示区（不覆盖用户拖动，仅随窗缩放）
+        if getattr(self, "_sized_plan_id", None) is not None:
+            self._auto_fit_columns()
 
     def _on_item_changed(self, item) -> None:
         """勾选状态变化 → 记忆状态并更新"立即更新"可用性（#3）。"""
