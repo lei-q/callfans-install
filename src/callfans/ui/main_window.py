@@ -12,9 +12,9 @@ import threading
 from PySide6.QtCore import Qt, QObject, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import client

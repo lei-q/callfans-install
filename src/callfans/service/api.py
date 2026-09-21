@@ -162,7 +162,9 @@ def create_app(
         sqlsync_task = None
         if enable_scheduler:
             task = start_scheduler(cfg, state, do_check)
-        if enable_scheduler and sqlsync_cfg is not None:
+        # 定时自动执行 SQL 同步：默认关闭（2026-09-21 决策变更——SQL 仅在
+        # "立即更新"时执行；SQLSYNC_AUTO_APPLY=1 恢复全自动）
+        if enable_scheduler and sqlsync_cfg is not None and sqlsync_cfg.policy.auto_apply:
             async def _sqlsync_loop():
                 await asyncio.sleep(60)  # 启动缓冲
                 while True:

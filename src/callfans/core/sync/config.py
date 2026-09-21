@@ -58,6 +58,8 @@ class SyncPolicy:
     max_rows_per_table: int = 1_000_000  # 超限仅比结构不比数据
     no_pk_tables: str = "skip_warn"      # error | skip_warn
     exclude_dbs: list[str] = field(default_factory=list)  # 多库排除名单
+    auto_apply: bool = False  # 定时自动执行（2026-09-21 决策变更：默认关闭，
+                              # SQL 仅在"立即更新"时执行；SQLSYNC_AUTO_APPLY=1 可开回）
 
 
 def _csv(v: str) -> list[str]:
@@ -131,6 +133,7 @@ class CloudSyncConfig:
             max_rows_per_table=int(_env("SQLSYNC_MAX_ROWS_PER_TABLE", "1000000")),
             no_pk_tables=_env("SQLSYNC_NO_PK_TABLES", "skip_warn"),
             exclude_dbs=_csv(_env("SQLSYNC_EXCLUDE_DBS", "")),  # 多库模式排除名单
+            auto_apply=_env("SQLSYNC_AUTO_APPLY", "0").strip().lower() in ("1", "true", "yes"),
         )
         if policy.max_statements < 1 or not (0 < policy.max_table_ratio <= 1):
             raise SyncConfigError("SQLSYNC_* 护栏阈值非法")
