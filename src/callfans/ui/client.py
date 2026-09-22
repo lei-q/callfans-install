@@ -28,6 +28,7 @@ def _connect(timeout: float = 5.0) -> httpx.Client:
         base_url=f"http://127.0.0.1:{rt['port']}",
         headers={"Authorization": f"Bearer {rt['token']}"},
         timeout=timeout,
+        trust_env=False,  # 本机 IPC 永远直连：系统代理会掐长时间无响应的连接
     )
     try:
         client.get("/api/v1/status").raise_for_status()

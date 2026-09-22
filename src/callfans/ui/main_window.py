@@ -75,7 +75,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self, poll_enabled: bool = True):
         super().__init__()
-        self.setWindowTitle("callfans 管家")
+        from .. import __version__
+        self.setWindowTitle(f"callfans 管家 v{__version__}")
         self.resize(760, 520)
         self._workers: list[Worker] = []
         self._busy = False  # 检查/更新进行中（退出确认用）
