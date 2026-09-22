@@ -33,6 +33,7 @@ from ..core.local import StateStore
 from ..core.models import UpdatePlan
 from ..core.sync.config import CloudSyncConfig, SyncConfigError
 from ..core.sync.runtime import SqlSyncRuntime
+from ..core.selfupdate import fetch_latest, is_newer
 from ..core.updaters.runner import UpdateRunner
 from ..paths import log_file, runtime_file, state_file
 from .hub import EventHub
@@ -49,6 +50,7 @@ class CheckState:
     plan: UpdatePlan | None = None
     last_check: datetime | None = None
     error: str | None = None
+    latest_release: dict | None = None  # GitHub 最新版（自身更新提示）
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -160,6 +162,29 @@ def create_app(
                 pass
         task = None
         sqlsync_task = None
+        version_task = None
+        if enable_scheduler:
+
+            async def _version_loop():
+                await asyncio.sleep(180)  # 启动缓冲
+                while True:
+                    try:
+                        latest = await anyio.to_thread.run_sync(fetch_latest)
+                        if latest and is_newer(latest["version"]):
+                            if not state.latest_release or \
+                                    state.latest_release.get("version") != latest["version"]:
+                                state.latest_release = latest
+                                emit("self_update_available", {
+                                    "current": __version__, **latest})
+                                log.info("发现新版本: %s（当前 %s）",
+                                         latest["version"], __version__)
+                        else:
+                            state.latest_release = None
+                    except Exception:
+                        log.debug("版本检查异常（忽略）")
+                    await asyncio.sleep(24 * 3600)
+
+            version_task = asyncio.create_task(_version_loop())
         if enable_scheduler:
             task = start_scheduler(cfg, state, do_check)
         # 定时自动执行 SQL 同步：默认关闭（2026-09-21 决策变更——SQL 仅在
@@ -184,6 +209,8 @@ def create_app(
                 task.cancel()
             if sqlsync_task is not None:
                 sqlsync_task.cancel()
+            if version_task is not None:
+                version_task.cancel()
             if write_runtime_file:
                 clear_runtime(runtime_file())
 
@@ -204,6 +231,7 @@ def create_app(
             "updating": state.updating,
             "pending_count": len(state.plan.pending) if state.plan else 0,
             "error": state.error,
+            "latest_release": state.latest_release,
             "sqlsync": StateStore(state_file()).get("sqlsync"),
         }
 

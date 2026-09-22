@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self._busy = False  # 检查/更新进行中（退出确认用）
         self._last_seen_check: str | None = None  # 用于识别"新一轮检查结果"
         self._first_refresh = True
+        self._prompted_versions: set[str] = set()
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -384,6 +385,28 @@ class MainWindow(QMainWindow):
             text += "\n\n──── 变更 SQL ────\n" + "\n".join(preview) + note
         self.changelog_view.setPlainText(text)
 
+    def _prompt_self_update(self, data: dict) -> None:
+        """新版本弹框提示（前往下载页 / 稍后）；每版本每次会话只提示一次。"""
+        latest = data.get("version") or ""
+        if not latest or latest in getattr(self, "_prompted_versions", set()):
+            return
+        getattr(self, "_prompted_versions", set()).add(latest)
+        self.log(f"◆ 发现新版本 v{latest}（当前 v{data.get('current')}）")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("发现新版本")
+        box.setText(f"callfans 管家有新版本 v{latest}（当前 v{data.get('current')}）。\n\n"
+                    "建议升级以获得最新功能与修复。")
+        btn_open = box.addButton("前往下载", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("稍后再说", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is btn_open:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+
+            QDesktopServices.openUrl(QUrl(str(data.get("url") or "")))
+            self.log(f"已打开下载页: {data.get('url')}")
+
     def _toggle_log_size(self) -> None:
         """展开/收起进度与结果区域。"""
         total = sum(self._vsplit.sizes()) or 600
@@ -569,6 +592,8 @@ class MainWindow(QMainWindow):
                          f"失败 {summary.get('failed', 0)}｜"
                          f"回滚 {summary.get('rolled_back', 0)}")
             self.refresh()
+        elif event == "self_update_available":
+            self._prompt_self_update(data)
         elif event == "sqlsync_progress":
             stage = data.get("stage", "")
             if stage == "execute" and data.get("total"):
