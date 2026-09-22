@@ -145,12 +145,17 @@ class MainWindow(QMainWindow):
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(140)
+        self.log_view.setMinimumHeight(80)  # 不设上限：由分割条自由调高（v0.4.4 实测修复）
         self.log_view.setMaximumBlockCount(2000)  # pull 进度行多，自动裁剪旧行
         self.log_view.setPlaceholderText("进度与结果（实时）")
 
         log_header = QHBoxLayout()
         log_header.addWidget(QLabel("进度与结果"))
+        self.btn_toggle_log = QPushButton("⤢ 展开")
+        self.btn_toggle_log.setToolTip("展开/收起进度与结果区域（也可直接拖动上方分割条调高）")
+        self._log_expanded = False
+        self.btn_toggle_log.clicked.connect(self._toggle_log_size)
+        log_header.addWidget(self.btn_toggle_log)
         log_header.addStretch(1)
         self.btn_export_sql = QPushButton("导出 SQL")
         self.btn_export_sql.setToolTip("将选中的数据库变更 SQL 导出为 .sql 文件")
@@ -166,12 +171,15 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_view)
 
         # 垂直分割：上半（表格+详情）/下半（日志），可拖动调高（#5）
-        vsplit = QSplitter(Qt.Orientation.Vertical)
+        self._vsplit = vsplit = QSplitter(Qt.Orientation.Vertical)
         vsplit.addWidget(splitter)
         vsplit.addWidget(log_panel)
-        vsplit.setStretchFactor(0, 4)
-        vsplit.setStretchFactor(1, 1)
-        vsplit.setSizes([380, 140])
+        vsplit.setHandleWidth(8)          # 拖动手柄加宽，好抓
+        vsplit.setCollapsible(0, False)
+        vsplit.setCollapsible(1, False)
+        vsplit.setStretchFactor(0, 3)
+        vsplit.setStretchFactor(1, 2)
+        vsplit.setSizes([300, 240])
         layout.addWidget(vsplit, 1)
 
         self.setCentralWidget(central)
@@ -375,6 +383,17 @@ class MainWindow(QMainWindow):
             text += "\n\n──── 变更 SQL ────\n" + "\n".join(preview) + note
         self.changelog_view.setPlainText(text)
 
+    def _toggle_log_size(self) -> None:
+        """展开/收起进度与结果区域。"""
+        total = sum(self._vsplit.sizes()) or 600
+        if self._log_expanded:
+            self._vsplit.setSizes([int(total * 0.55), int(total * 0.45)])
+            self.btn_toggle_log.setText("⤢ 展开")
+        else:
+            self._vsplit.setSizes([int(total * 0.25), int(total * 0.75)])
+            self.btn_toggle_log.setText("⤡ 收起")
+        self._log_expanded = not self._log_expanded
+
     def _export_selected_sql(self) -> None:
         """导出变更 SQL 到 .sql 文件（#2）。每个分支都有日志，绝不静默。"""
         try:
@@ -432,7 +451,9 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.progress.setVisible(True)
         self.log(f"开始更新（勾选 {len(selected)} 项）…")
-        self._run(lambda: client.update(selected), self._update_done, self._action_failed)
+        self._awaiting_update_result = True
+        self._run(lambda: client.update(selected), self._update_done,
+                  self._update_request_failed)
 
     def _update_done(self, report: dict) -> None:
         self._busy = False
@@ -456,6 +477,11 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False)
         self.log(f"操作失败: {error}")
         self.refresh()
+
+    def _update_request_failed(self, error: str) -> None:
+        """更新请求连接中断：服务端仍在执行（结果保证由 update_done 事件送达），
+        不按失败处理，等事件收尾。"""
+        self.log("⚠ 更新请求连接中断——服务仍在后台执行，结果稍后自动送达…")
 
     # ---------- 服务 WS 事件（实时进度） ----------
 
@@ -534,6 +560,13 @@ class MainWindow(QMainWindow):
         elif event == "update_done":
             self._set_stage(None)
             self.progress.setValue(self.progress.maximum())
+            if getattr(self, "_awaiting_update_result", False):
+                self._awaiting_update_result = False
+                self._busy = False
+                summary = data.get("summary") or {}
+                self.log(f"更新汇总: 成功 {summary.get('success', 0)}｜"
+                         f"失败 {summary.get('failed', 0)}｜"
+                         f"回滚 {summary.get('rolled_back', 0)}")
             self.refresh()
         elif event == "sqlsync_progress":
             stage = data.get("stage", "")
