@@ -6,14 +6,17 @@
   SQLSYNC_INTERVAL_HOURS / SQLSYNC_MAX_STATEMENTS / SQLSYNC_MAX_TABLE_RATIO /
   SQLSYNC_MAX_DELETE_ROWS                    策略（护栏阈值可调，护栏本身不可关）
 
-云端元表 DDL（管理员在建标库时执行一次）：
+云端元表 DDL（管理员在建标库时执行一次；db 列可选，可后加）：
   CREATE DATABASE IF NOT EXISTS callfans_sync;
   CREATE TABLE callfans_sync.tables(
     name VARCHAR(128) PRIMARY KEY,     -- 表名
     data_sync TINYINT(1) NOT NULL DEFAULT 1,  -- 是否同步数据（1=结构+数据）
     pk VARCHAR(64),                    -- 主键/唯一键列（数据同步必需）
-    ignore_columns VARCHAR(512)        -- 忽略列，逗号分隔
+    ignore_columns VARCHAR(512),       -- 忽略列，逗号分隔
+    db VARCHAR(64) NULL                -- 限定库（可选）：NULL/空=适用所有库
+                                       -- （表在该库存在才生效）；填库名=仅该库
   );
+  旧表补列：ALTER TABLE callfans_sync.tables ADD COLUMN db VARCHAR(64) NULL;
 """
 
 from __future__ import annotations
