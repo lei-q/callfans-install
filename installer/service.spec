@@ -30,6 +30,7 @@ exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
     name="callfans-service",
+    icon=os.path.join(SPECPATH, "assets", "logo.ico"),  # exe 图标
     debug=False,
     console=False,  # 由 UI/系统拉起，日志落文件，不弹控制台窗口
 )

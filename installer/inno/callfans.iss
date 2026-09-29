@@ -4,7 +4,7 @@
 ; 自启: HKCU Run 注册 callfans-ui（用户级，tech-design 模式 A），UI 再自拉起服务
 
 #define MyAppName "callfans"
-#define MyAppVersion "0.6.0"
+#define MyAppVersion "0.6.1"
 #define MyAppExeName "callfans-ui.exe"
 
 [Setup]
@@ -16,6 +16,7 @@ PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 OutputDir=..\..\dist
 OutputBaseFilename=callfans-setup-x64
+SetupIconFile=..\assets\logo.ico
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible

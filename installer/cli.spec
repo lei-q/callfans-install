@@ -14,6 +14,7 @@ exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
     name="callfans",
+    icon=os.path.join(SPECPATH, "assets", "logo.ico"),  # exe 图标
     debug=False,
     console=True,
 )
