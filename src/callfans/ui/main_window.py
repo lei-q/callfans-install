@@ -72,17 +72,21 @@ class Worker(QObject):
 class MainWindow(QMainWindow):
     new_pending = Signal(int)  # 通知托盘弹气泡
     notify = Signal(str, str)  # (标题, 内容) 通用托盘通知（如 sqlsync 失败）
+    log_line = Signal(str)     # 工作线程安全写日志（下载进度等）
 
     def __init__(self, poll_enabled: bool = True):
         super().__init__()
         from .. import __version__
         self.setWindowTitle(f"助手管家 v{__version__}")
+        from .tray import _make_icon
+        self.setWindowIcon(_make_icon())  # 任务栏/窗口图标（logo.svg）
         self.resize(760, 520)
         self._workers: list[Worker] = []
         self._busy = False  # 检查/更新进行中（退出确认用）
         self._last_seen_check: str | None = None  # 用于识别"新一轮检查结果"
         self._first_refresh = True
         self._prompted_versions: set[str] = set()
+        self.log_line.connect(self.log)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -90,6 +94,9 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         self.btn_check = QPushButton("检查更新")
         self.btn_update = QPushButton("立即更新")
+        self.btn_checkver = QPushButton("检查新版")
+        self.btn_checkver.setToolTip("检查本程序是否有新版本（可下载并自动安装）")
+        self.btn_checkver.clicked.connect(self.on_check_version_clicked)
         self.btn_quit = QPushButton("退出")
         self.btn_quit.setToolTip("退出程序（关闭窗口只会最小化到托盘）")
         self.btn_check.clicked.connect(self.on_check_clicked)
@@ -101,6 +108,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_update)
         top.addStretch(1)
         top.addWidget(self.label_status)
+        top.addWidget(self.btn_checkver)
         top.addWidget(self.btn_quit)
         layout.addLayout(top)
 
@@ -385,6 +393,30 @@ class MainWindow(QMainWindow):
             text += "\n\n──── 变更 SQL ────\n" + "\n".join(preview) + note
         self.changelog_view.setPlainText(text)
 
+    def on_check_version_clicked(self) -> None:
+        """手动检查本程序新版本（托盘菜单/顶栏按钮共用）。"""
+        self.log("检查本程序新版本…")
+        self._set_stage("检查新版本")
+        from ..core.selfupdate import fetch_latest
+
+        self._run(fetch_latest, self._manual_version_done,
+                  lambda e: (self._set_stage(None), self.log(f"版本检查失败: {e}"))[0])
+
+    def _manual_version_done(self, latest: dict | None) -> None:
+        self._set_stage(None)
+        from ..core.selfupdate import is_newer
+
+        if latest is None:
+            self.log("版本检查失败：网络不可达（GitHub）")
+            return
+        if not is_newer(latest["version"]):
+            from .. import __version__
+
+            self.log(f"✓ 已是最新版本 v{__version__}")
+            return
+        self._prompted_versions.discard(latest["version"])  # 手动检查允许再次弹框
+        self._prompt_self_update(latest)
+
     def _prompt_self_update(self, data: dict) -> None:
         """新版本弹框提示（前往下载页 / 稍后）；每版本每次会话只提示一次。"""
         latest = data.get("version") or ""
@@ -397,15 +429,68 @@ class MainWindow(QMainWindow):
         box.setWindowTitle("发现新版本")
         box.setText(f"助手管家有新版本 v{latest}（当前 v{data.get('current')}）。\n\n"
                     "建议升级以获得最新功能与修复。")
-        btn_open = box.addButton("前往下载", QMessageBox.ButtonRole.AcceptRole)
+        btn_install = box.addButton("下载并安装", QMessageBox.ButtonRole.AcceptRole)
+        btn_open = box.addButton("前往下载页", QMessageBox.ButtonRole.ActionRole)
         box.addButton("稍后再说", QMessageBox.ButtonRole.RejectRole)
         box.exec()
-        if box.clickedButton() is btn_open:
+        clicked = box.clickedButton()
+        if clicked is btn_install:
+            self._download_and_install(data)
+        elif clicked is btn_open:
             from PySide6.QtGui import QDesktopServices
             from PySide6.QtCore import QUrl
 
             QDesktopServices.openUrl(QUrl(str(data.get("url") or "")))
             self.log(f"已打开下载页: {data.get('url')}")
+
+    def _download_and_install(self, data: dict) -> None:
+        """下载新版安装包 → 确认后退出程序并静默运行安装器（安装器自带停旧进程）。"""
+        from ..core.selfupdate import download_setup
+
+        self._busy = True
+        self.btn_check.setEnabled(False)
+        self.btn_update.setEnabled(False)
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(True)
+        self.log(f"开始下载 v{data.get('version')} 安装包（下载完成后将询问安装）…")
+
+        def _dl():
+            return download_setup(
+                data,
+                on_progress=lambda done, total: self.log_line.emit(
+                    f"  下载 {done // 1048576}MB"
+                    + (f"/{total // 1048576}MB" if total else "")))
+
+        self._run(_dl, self._installer_ready, self._installer_download_failed)
+
+    def _installer_ready(self, path) -> None:
+        self._busy = False
+        self.progress.setVisible(False)
+        self._update_update_button()
+        from pathlib import Path
+
+        size_mb = Path(path).stat().st_size // 1048576
+        self.log(f"安装包下载完成: {path}（{size_mb} MB）")
+        ret = QMessageBox.question(
+            self, "安装新版本",
+            f"安装包已就绪（{size_mb} MB）。\n\n立即安装将退出程序并自动升级"
+            "（升级完成后自动重启）。是否继续？")
+        if ret != QMessageBox.StandardButton.Yes:
+            self.log("已保留安装包，未安装（可手动运行）")
+            return
+        import subprocess
+
+        self.log("退出程序并启动安装器…")
+        subprocess.Popen([str(path), "/SILENT"], close_fds=True)
+        self._busy = False  # 跳过退出确认
+        QApplication.quit()
+
+    def _installer_download_failed(self, error: str) -> None:
+        self._busy = False
+        self.progress.setVisible(False)
+        self._update_update_button()
+        self.log(f"安装包下载失败: {error}（可改用【前往下载页】手动下载）")
+        self.notify.emit("客户端升级下载失败", str(error)[:160])
 
     def _toggle_log_size(self) -> None:
         """展开/收起进度与结果区域。"""

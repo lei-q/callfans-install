@@ -1,3 +1,3 @@
 """callfans 镜像更新器。"""
 
-__version__ = "0.5.2"
+__version__ = "0.6.0"

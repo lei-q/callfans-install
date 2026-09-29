@@ -28,13 +28,97 @@ class TestIsNewer:
 def test_fetch_latest_silent_on_network_error(monkeypatch):
     import httpx
 
-    from callfans.core.selfupdate import RELEASES_API, fetch_latest
+    from callfans.core.selfupdate import fetch_latest
 
     def boom(url, **kw):
         raise httpx.ConnectError("offline")
 
     monkeypatch.setattr(httpx, "get", boom)
     assert fetch_latest() is None
+
+
+def test_dual_path_fetch_retries_direct(monkeypatch):
+    """双通道：代理失败自动直连重试（2026-09-29 实测根因）。"""
+    import httpx
+
+    import callfans.core.selfupdate as su
+
+    calls = []
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"tag_name": "v9.9.9", "html_url": "u",
+                    "assets": [{"name": "callfans-setup-x64.exe",
+                                "browser_download_url": "https://d/x.exe", "size": 1}]}
+
+    def fake_get(url, trust_env=True, **kw):
+        calls.append(trust_env)
+        if trust_env:
+            raise httpx.ConnectError("proxy dead")
+        return FakeResp()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    info = su.fetch_latest()
+    assert calls == [True, False]  # 先代理后直连
+    assert info["version"] == "9.9.9"
+    asset = su.find_setup_asset(info)
+    assert asset["url"] == "https://d/x.exe"
+
+
+def test_find_setup_asset_none():
+    from callfans.core.selfupdate import find_setup_asset
+
+    assert find_setup_asset({"assets": [{"name": "a.deb"}]}) is None
+    assert find_setup_asset({}) is None
+
+
+def test_download_setup_streams_to_file(monkeypatch, tmp_path):
+    import httpx
+
+    import callfans.core.selfupdate as su
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        @property
+        def headers(self):
+            return {"content-length": "6"}
+
+        def iter_bytes(self, n):
+            yield b"ab"; yield b"cd"; yield b"ef"
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def stream(self, method, url):
+            return FakeStream()
+
+    release = {"assets": [{"name": "callfans-setup-x64.exe",
+                           "url": "https://d/x.exe", "size": 6}]}
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    progress = []
+    path = su.download_setup(release, dest_dir=tmp_path,
+                             on_progress=lambda d, t: progress.append((d, t)))
+    assert path.read_bytes() == b"abcdef"
+    # 进度按 MB 节流：小于 1MB 的数据只在完成时可能触发一次
+    assert progress == [(2, 6)] or progress == []
 
 
 def test_fetch_latest_parses():

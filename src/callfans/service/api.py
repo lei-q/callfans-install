@@ -132,7 +132,11 @@ def create_app(
             state.error = None
             payload = plan.to_dict()
             await hub.broadcast({"event": "check_done", "data": payload})
-            log.info("检查完成: %d 项待更新", len(plan.pending))
+            by_type: dict[str, int] = {}
+            for p in plan.pending:
+                by_type[p.type] = by_type.get(p.type, 0) + 1
+            detail = " / ".join(f"{t_} {n}" for t_, n in sorted(by_type.items())) or "无差异"
+            log.info("检查完成（各类型均查）: %s", detail)
             return payload
         except Exception as e:
             state.error = f"{type(e).__name__}: {e}"
@@ -166,8 +170,9 @@ def create_app(
         if enable_scheduler:
 
             async def _version_loop():
-                await asyncio.sleep(180)  # 启动缓冲
+                await asyncio.sleep(60)  # 启动缓冲（2026-09-29 由 180s 缩短）
                 while True:
+                    ok = True
                     try:
                         latest = await anyio.to_thread.run_sync(fetch_latest)
                         if latest and is_newer(latest["version"]):
@@ -181,8 +186,11 @@ def create_app(
                         else:
                             state.latest_release = None
                     except Exception:
+                        ok = False
                         log.debug("版本检查异常（忽略）")
-                    await asyncio.sleep(24 * 3600)
+                    # 失败/无结果 → 30 分钟重试；成功 → 24 小时（v0.5.2 实测：
+                    # 代理故障静默失败后要等一整天才有下一次机会）
+                    await asyncio.sleep(24 * 3600 if ok else 1800)
 
             version_task = asyncio.create_task(_version_loop())
         if enable_scheduler:
