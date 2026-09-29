@@ -56,8 +56,14 @@ begin
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+[Tasks]
+; 安装时默认勾选"创建桌面快捷方式"（可取消）；/SILENT 静默装同样创建
+Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; \
+    GroupDescription: "附加任务:"; Flags: checkedonce
+
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\ui\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\ui\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\ui\{#MyAppExeName}"; Description: "启动 助手管家"; Flags: nowait postinstall skipifsilent
