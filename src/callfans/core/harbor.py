@@ -47,12 +47,21 @@ class HarborClient:
     def __init__(self, base_url: str, project: str, username: str, password: str):
         self.base_url = base_url.rstrip("/")
         self.project = project
-        self._http = httpx.Client(base_url=self.base_url, auth=(username, password), timeout=30)
+        # trust_env=False：内网 registry 永远直连——系统代理会把请求送进代理，
+        # 代理拒绝/不可达即 WinError 10061（v0.5.1 实测：Harbor 正常却报"积极拒绝"）
+        self._http = httpx.Client(base_url=self.base_url, auth=(username, password),
+                                  timeout=30, trust_env=False)
 
     # ---------- 基础 ----------
 
     def _get_json(self, path: str, params: dict | None = None, headers: dict | None = None):
-        resp = self._http.get(path, params=params, headers=headers)
+        try:
+            resp = self._http.get(path, params=params, headers=headers)
+        except httpx.HTTPError as e:
+            raise HarborError(
+                f"Harbor {self.base_url} 不可达: {type(e).__name__}: {e}"
+                "（确认仓库地址/网络；若配了系统代理，本程序已强制直连）"
+            ) from e
         if resp.status_code >= 400:
             raise HarborError(f"GET {path} -> {resp.status_code}: {resp.text[:300]}")
         return resp

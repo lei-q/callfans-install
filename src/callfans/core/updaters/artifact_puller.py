@@ -31,6 +31,10 @@ class ArtifactPuller:
         from oras.client import OrasClient
 
         client = OrasClient(hostname=self.host, insecure=self.insecure)
+        try:
+            client.session.trust_env = False  # requests 同样禁用环境代理（内网直连）
+        except AttributeError:
+            pass  # oras-py 版本差异，忽略
         # 直接设置 basic auth（login() 会依赖 docker CLI，不必走）
         client.auth.set_basic_auth(self.username, self.password)
         target = f"{self.host}/{repo_full}:{tag}"
