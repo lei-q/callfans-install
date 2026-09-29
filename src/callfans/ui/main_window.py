@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
     def __init__(self, poll_enabled: bool = True):
         super().__init__()
         from .. import __version__
-        self.setWindowTitle(f"callfans 管家 v{__version__}")
+        self.setWindowTitle(f"助手管家 v{__version__}")
         self.resize(760, 520)
         self._workers: list[Worker] = []
         self._busy = False  # 检查/更新进行中（退出确认用）
@@ -395,7 +395,7 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle("发现新版本")
-        box.setText(f"callfans 管家有新版本 v{latest}（当前 v{data.get('current')}）。\n\n"
+        box.setText(f"助手管家有新版本 v{latest}（当前 v{data.get('current')}）。\n\n"
                     "建议升级以获得最新功能与修复。")
         btn_open = box.addButton("前往下载", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("稍后再说", QMessageBox.ButtonRole.RejectRole)
