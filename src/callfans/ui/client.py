@@ -23,7 +23,7 @@ def _find_runtime() -> dict | None:
 def _connect(timeout: float = 5.0) -> httpx.Client:
     rt = _find_runtime()
     if rt is None:
-        raise ServiceUnavailable("服务未运行（可先启动 callfans serve）")
+        raise ServiceUnavailable("服务未运行（可先启动 助手管家 serve）")
     client = httpx.Client(
         base_url=f"http://127.0.0.1:{rt['port']}",
         headers={"Authorization": f"Bearer {rt['token']}"},

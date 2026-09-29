@@ -60,7 +60,7 @@ end;
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\ui\{#MyAppExeName}"
 
 [Run]
-Filename: "{app}\ui\{#MyAppExeName}"; Description: "启动 callfans"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\ui\{#MyAppExeName}"; Description: "启动 助手管家"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; 卸载前停掉服务与托盘
