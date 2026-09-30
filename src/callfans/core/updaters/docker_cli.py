@@ -7,7 +7,6 @@ server_updater 的回滚编排依赖这些原语，测试用 Fake 注入。
 from __future__ import annotations
 
 import json
-import json
 import logging
 import os
 import re
@@ -163,6 +162,23 @@ class DockerCLI:
         if force_recreate:
             args.append("--force-recreate")
         self._stream([*args, service], on_line=on_line, timeout=600)
+
+    def registry_secure_map(self) -> dict[str, bool]:
+        """daemon 已知 registry 的 Secure 标记（来自 daemon.json insecure-registries）。
+
+        IndexConfigs 里 Secure=false 即 insecure（允许 HTTP/自签证书）；
+        不在名单的 registry daemon 默认强制 HTTPS。
+        """
+        import json as _json
+
+        try:
+            out = self._run(["info", "--format",
+                             "{{json .RegistryConfig.IndexConfigs}}"], timeout=30)
+            configs = _json.loads(out or "{}")
+        except (DockerError, ValueError):
+            return {}
+        return {str(name): bool(cfg.get("Secure", True))
+                for name, cfg in configs.items()}
 
     def containers_by_service(self, service: str) -> list[str]:
         """按 compose service 标签过滤容器名（项目无关，比 compose ps 可靠）。"""

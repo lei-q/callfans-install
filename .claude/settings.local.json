@@ -3,7 +3,10 @@
     "allow": [
       "Bash(sed -i '' 's/version = \"0.6.0\"/version = \"0.6.1\"/' pyproject.toml)",
       "Bash(sed -i '' 's/__version__ = \"0.6.0\"/__version__ = \"0.6.1\"/' src/callfans/__init__.py)",
-      "Bash(sed -i '' 's/#define MyAppVersion \"0.6.0\"/#define MyAppVersion \"0.6.1\"/' installer/inno/callfans.iss)"
+      "Bash(sed -i '' 's/#define MyAppVersion \"0.6.0\"/#define MyAppVersion \"0.6.1\"/' installer/inno/callfans.iss)",
+      "Bash(sed -i '' 's/version = \"0.6.1\"/version = \"0.6.2\"/' pyproject.toml)",
+      "Bash(sed -i '' 's/__version__ = \"0.6.1\"/__version__ = \"0.6.2\"/' src/callfans/__init__.py)",
+      "Bash(sed -i '' 's/#define MyAppVersion \"0.6.1\"/#define MyAppVersion \"0.6.2\"/' installer/inno/callfans.iss)"
     ]
   }
 }

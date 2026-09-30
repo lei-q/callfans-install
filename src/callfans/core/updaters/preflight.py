@@ -62,9 +62,26 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None) ->
                             f"compose 变量未定义: {', '.join(missing)}"
                             "（需在 compose 同目录 .env 定义；tag 变量由更新器维护）"
                         )
-                    # 私有仓库 pull 需 daemon 侧凭据：用 Harbor 账号自动 login（幂等）
+                    # HTTP 仓库必须加入 daemon insecure-registries（pull 走 Docker
+                    # 守护进程，对非本机 registry 默认强制 HTTPS，与 .env 协议无关
+                    # ——2026-09-30 实测：EOF 根因）
                     registry = env_values.get("HARBOR_REGISTRY")
-                    if registry:
+                    insecure_ok = True
+                    if registry and (cfg.harbor_api_url or "").startswith("http://"):
+                        secure_map = d.registry_secure_map()
+                        host = registry.split(":")[0]
+                        insecure_ok = any(
+                            name in (registry, host) and not secure
+                            for name, secure in secure_map.items())
+                        if not insecure_ok:
+                            errors.append(
+                                f"HTTP 仓库 {registry} 未加入 Docker daemon 的 insecure-registries"
+                                "（docker pull 对非本机仓库默认强制 HTTPS，EOF 的根因）。"
+                                "修复：Docker Desktop → Settings → Docker Engine，在 daemon.json "
+                                f'增加 "insecure-registries": ["{host}"]，Apply & Restart。'
+                                f"（当前 daemon 名单: {sorted(secure_map) or '空'}）"
+                            )
+                    if registry and insecure_ok:
                         try:
                             d.login(registry, cfg.harbor_username, cfg.harbor_password)
                         except DockerError as e:

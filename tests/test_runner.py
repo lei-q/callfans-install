@@ -89,6 +89,92 @@ def test_preflight_failure_aborts_all(tmp_path):
     assert stubs["server"].items == []
 
 
+class InsecureMapDocker:
+    """带 registry 安全名单的 docker 桩（2026-09-30 insecure 检测）。"""
+
+    def __init__(self, missing=None, secure_map=None):
+        self.missing = missing or []
+        self.secure_map = secure_map if secure_map is not None else {
+            "47.87.66.98": False, "172.25.1.220": False, "docker.io": True}
+        self.logins = []
+
+    def version_ok(self):
+        return True
+
+    def compose_config_checked(self, f):
+        return {"services": {}}, self.missing
+
+    def registry_secure_map(self):
+        return dict(self.secure_map)
+
+    def login(self, registry, u, p):
+        self.logins.append(registry)
+
+
+def test_preflight_insecure_registry_missing(tmp_path):
+    """HTTP 仓库不在 daemon insecure 名单 → preflight 拦截并给配置指引。"""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n",
+        encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "HARBOR_REGISTRY=47.87.66.98\nAPI_TAG=T1\n", encoding="utf-8")
+    docker = InsecureMapDocker(secure_map={"docker.io": True})  # 名单里没有 47.87.66.98
+    runner = UpdateRunner(make_cfg(harbor_api_url="http://47.87.66.98",
+                                   compose_file=compose),
+                          docker=docker, updaters={"server": StubUpdater()},
+                          history_path=tmp_path / "h.jsonl")
+    report = runner.run(plan_of(make_item("server", "callfans/api")))
+    assert report["preflight_error"] is not None
+    assert "insecure-registries" in report["preflight_error"]
+    assert "daemon.json" in report["preflight_error"]
+    assert docker.logins == []  # insecure 未过，不执行 login
+
+
+def test_preflight_insecure_registry_ok(tmp_path):
+    """仓库已 insecure（Secure=false）→ 通过。"""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n",
+        encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "HARBOR_REGISTRY=47.87.66.98\nAPI_TAG=T1\n", encoding="utf-8")
+    docker = InsecureMapDocker()
+    runner = UpdateRunner(make_cfg(harbor_api_url="http://47.87.66.98",
+                                   compose_file=compose),
+                          docker=docker, updaters={"server": StubUpdater()},
+                          history_path=tmp_path / "h.jsonl")
+    report = runner.run(plan_of(make_item("server", "callfans/api")))
+    assert report["preflight_error"] is None
+    assert docker.logins == ["47.87.66.98"]
+
+    # 名单里标记 Secure=true（显式安全）→ 仍拦截
+    docker2 = InsecureMapDocker(secure_map={"47.87.66.98": True})
+    report2 = UpdateRunner(make_cfg(harbor_api_url="http://47.87.66.98",
+                                    compose_file=compose),
+                           docker=docker2, updaters={"server": StubUpdater()},
+                           history_path=tmp_path / "h.jsonl"
+                           ).run(plan_of(make_item("server", "callfans/api")))
+    assert "insecure-registries" in report2["preflight_error"]
+
+
+def test_preflight_https_url_skips_insecure_check(tmp_path):
+    """.env 为 https 仓库 → 不做 insecure 检查（daemon HTTPS 本就正确）。"""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  api:\n    image: ${HARBOR_REGISTRY}/callfans/api:${API_TAG}\n",
+        encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "HARBOR_REGISTRY=reg.example.com\nAPI_TAG=T1\n", encoding="utf-8")
+    docker = InsecureMapDocker(secure_map={})  # 名单空
+    runner = UpdateRunner(make_cfg(harbor_api_url="https://reg.example.com",
+                                   compose_file=compose),
+                          docker=docker, updaters={"server": StubUpdater()},
+                          history_path=tmp_path / "h.jsonl")
+    report = runner.run(plan_of(make_item("server", "callfans/api")))
+    assert report["preflight_error"] is None
+
+
 class MissingVarDocker:
     """compose config 报缺变量（v0.1.5 Windows 实测场景）；login 可注入。"""
 
