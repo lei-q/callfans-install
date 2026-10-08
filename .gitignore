@@ -5,6 +5,8 @@ __pycache__/
 dist/
 build/
 .env
+!installer/assets/.env
+  # 部署 .env 模板必须进构建（Inno 打包依赖）
 .pytest_cache/
 *.log
 .DS_Store

@@ -94,6 +94,9 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         self.btn_check = QPushButton("检查更新")
         self.btn_update = QPushButton("立即更新")
+        self.btn_hostip = QPushButton("刷新 IP")
+        self.btn_hostip.setToolTip("探测当前宿主机 IP，写入部署 .env 并重建 xray-rest 容器")
+        self.btn_hostip.clicked.connect(self.on_refresh_host_ip)
         self.btn_checkver = QPushButton("检查新版")
         self.btn_checkver.setToolTip("检查本程序是否有新版本（可下载并自动安装）")
         self.btn_checkver.clicked.connect(self.on_check_version_clicked)
@@ -108,6 +111,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_update)
         top.addStretch(1)
         top.addWidget(self.label_status)
+        top.addWidget(self.btn_hostip)
         top.addWidget(self.btn_checkver)
         top.addWidget(self.btn_quit)
         layout.addLayout(top)
@@ -238,7 +242,9 @@ class MainWindow(QMainWindow):
         if sql:
             mark = "✓" if sql.get("last_status") == "success" else "⚠"
             sql_text = f"｜SQL同步: {mark}{sql.get('last_status')}"
-        self.label_status.setText(f"{state_text}｜最近检查: {last or '-'}{sql_text}")
+        host_ip = status.get("host_ip")
+        ip_text = f"｜IP: {host_ip}" if host_ip else ""
+        self.label_status.setText(f"{state_text}{ip_text}｜最近检查: {last or '-'}{sql_text}")
         self.btn_check.setEnabled(not busy)
         self._update_update_button()
 
@@ -392,6 +398,23 @@ class MainWindow(QMainWindow):
                 note = f"\n\n（共 {len(sql)} 条，仅预览前 {_MAX_SQL_PREVIEW_LINES} 条，完整内容请点【导出 SQL】）"
             text += "\n\n──── 变更 SQL ────\n" + "\n".join(preview) + note
         self.changelog_view.setPlainText(text)
+
+    def on_refresh_host_ip(self) -> None:
+        """刷新宿主机 IP：探测 → 写部署 .env → 重建 xray-rest。"""
+        self.log("探测宿主机 IP…")
+        self._set_stage("探测宿主机 IP")
+        self._run(client.refresh_host_ip, self._host_ip_done,
+                  lambda e: (self._set_stage(None), self.log(f"刷新 IP 失败: {e}"))[0])
+
+    def _host_ip_done(self, result: dict) -> None:
+        self._set_stage(None)
+        ip = result.get("ip")
+        self.log(f"宿主机 IP: {ip}（已写入部署 .env）")
+        if result.get("recreated"):
+            self.log("✓ xray-rest 容器已按新 HOST_IP 重建")
+        elif result.get("error"):
+            self.log(f"⚠ {result['error']}")
+        self.refresh()
 
     def on_check_version_clicked(self) -> None:
         """手动检查本程序新版本（托盘菜单/顶栏按钮共用）。"""

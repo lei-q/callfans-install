@@ -64,6 +64,11 @@ def status() -> dict:
     return _call("GET", "/api/v1/status")
 
 
+def refresh_host_ip() -> dict:
+    """刷新宿主机 IP（写部署 .env 并重建 xray-rest）。"""
+    return _call("POST", "/api/v1/host-ip/refresh", timeout=120)
+
+
 def pending() -> dict:
     return _call("GET", "/api/v1/pending")
 

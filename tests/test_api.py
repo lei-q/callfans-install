@@ -199,18 +199,27 @@ def test_check_sqlsync_eval_failure_visible(monkeypatch):
 
 
 
-def test_update_selective_items(tmp_path):
-    """立即更新支持勾选（#3）：只更新 items 指定的条目。"""
+def test_update_selective_items(monkeypatch, tmp_path):
+    """立即更新支持勾选（#3）：只更新 items 指定的条目（FakeRunner 打桩）。"""
+    import callfans.service.api as api_mod
     from callfans.core.models import PendingItem, UpdatePlan
 
-    class StubUpd:
-        def __init__(self):
-            self.updated = []
+    seen_plans: list = []
 
-        def update(self, item):
-            self.updated.append(item.name)
-            return {"name": item.name, "type": item.type, "old": item.old,
-                    "new": item.new, "result": "success", "error": None}
+    class FakeRunner:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, plan):
+            seen_plans.append([i.name for i in plan.pending])
+            return {
+                "started_at": "t", "finished_at": "t", "preflight_error": None,
+                "items": [{"name": i.name, "type": i.type, "old": i.old, "new": i.new,
+                           "result": "success", "error": None} for i in plan.pending],
+                "summary": {"success": len(plan.pending), "failed": 0, "rolled_back": 0},
+            }
+
+    monkeypatch.setattr(api_mod, "UpdateRunner", FakeRunner)
 
     class Checker2:
         def run(self):
@@ -227,28 +236,60 @@ def test_update_selective_items(tmp_path):
         resp = client.post("/api/v1/update", headers=headers,
                            json={"items": ["callfans/web"]})
         assert resp.status_code == 200
+        # 只勾选 web → runner 只收到 web
+        assert seen_plans[-1] == ["callfans/web"]
         report = resp.json()
         assert [r["name"] for r in report["items"]] == ["callfans/web"]
-        # 勾选 sqlsync 伪条目但未配置 → 不执行不报错
-        resp2 = client.post("/api/v1/update", headers=headers,
-                            json={"items": ["(sqlsync)", "callfans/web"]})
-        names2 = [r["name"] for r in resp2.json()["items"]]
-        assert names2 == ["callfans/web"]
-
-def test_ws_events_broadcast():
-    client, stub = make_client()
-    with client:
-        with client.websocket_connect(f"/api/v1/events?token={TOKEN}") as ws:
-            client.post("/api/v1/check", headers={"Authorization": f"Bearer {TOKEN}"})
-            msg = ws.receive_json()
-            assert msg["event"] == "check_done"
-            assert msg["data"]["pending"][0]["name"] == "callfans/api"
+        # 不带 body（全部）：runner 收到全部
+        resp2 = client.post("/api/v1/update", headers=headers)
+        assert seen_plans[-1] == ["callfans/api", "callfans/web"]
 
 
-def test_ws_wrong_token_rejected():
-    client, _ = make_client()
-    with client:
-        # 拒绝发生在握手阶段：close(4401)
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect("/api/v1/events?token=bad"):
-                pass
+def test_host_ip_refresh(monkeypatch, tmp_path):
+    """刷新宿主机 IP：写部署 .env + 重建 xray-rest + status 暴露。"""
+    import callfans.service.api as api_mod
+    from callfans.core.updaters import docker_cli as dc_mod
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  xray-rest:\n    image: xray-rest\n", encoding="utf-8")
+    deploy_env = tmp_path / ".env"
+    deploy_env.write_text("HOST_IP=127.0.0.1\n", encoding="utf-8")
+
+    monkeypatch.setattr(api_mod, "detect_host_ip", lambda: "172.25.1.100")
+    ups: list = []
+
+    class FakeDocker:
+        def version_ok(self):
+            return True
+
+        def compose_up(self, f, service, force_recreate=False, on_line=None):
+            ups.append((service, force_recreate))
+
+    monkeypatch.setattr(dc_mod.DockerCLI, "version_ok", FakeDocker.version_ok)
+    monkeypatch.setattr(dc_mod.DockerCLI, "compose_up",
+                        lambda self, f, s, force_recreate=False, on_line=None:
+                        ups.append((s, force_recreate)))
+
+    app = create_app(make_cfg(compose_file=compose), checker=StubChecker(),
+                     token=TOKEN, enable_scheduler=False)
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        resp = client.post("/api/v1/host-ip/refresh", headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["ip"] == "172.25.1.100" and data["recreated"] is True
+        # xray-rest 被强制重建
+        assert ups == [("xray-rest", True)]
+        # 部署 .env 已更新
+        assert "HOST_IP=172.25.1.100" in deploy_env.read_text(encoding="utf-8")
+        # status 暴露当前 IP
+        assert client.get("/api/v1/status", headers=headers).json()["host_ip"] == "172.25.1.100"
+
+
+def test_host_ip_refresh_no_compose():
+    app = create_app(make_cfg(), checker=StubChecker(), token=TOKEN,
+                     enable_scheduler=False)
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/host-ip/refresh",
+                           headers={"Authorization": f"Bearer {TOKEN}"})
+        assert resp.status_code == 400

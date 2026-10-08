@@ -9,7 +9,12 @@
       "Bash(sed -i '' 's/#define MyAppVersion \"0.6.1\"/#define MyAppVersion \"0.6.2\"/' installer/inno/callfans.iss)",
       "Bash(.venv/bin/python -m pytest -q)",
       "Bash(sed -i '' 's/version = \"0.6.2\"/version = \"0.7.0\"/' pyproject.toml)",
-      "Bash(sed -i '' 's/__version__ = \"0.6.2\"/__version__ = \"0.7.0\"/' src/callfans/__init__.py)"
+      "Bash(sed -i '' 's/__version__ = \"0.6.2\"/__version__ = \"0.7.0\"/' src/callfans/__init__.py)",
+      "Bash(.venv/bin/python -)",
+      "Bash(git check-ignore *)",
+      "Bash(sed -i '' 's/version = \"0.7.0\"/version = \"0.7.1\"/' pyproject.toml)",
+      "Bash(sed -i '' 's/__version__ = \"0.7.0\"/__version__ = \"0.7.1\"/' src/callfans/__init__.py)",
+      "Bash(sed -i '' 's/#define MyAppVersion \"0.7.0\"/#define MyAppVersion \"0.7.1\"/' installer/inno/callfans.iss)"
     ]
   }
 }

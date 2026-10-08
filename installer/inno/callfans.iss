@@ -6,7 +6,7 @@
 ;       并把 APP_ROOT / DEPLOY_ROOT / COMPOSE_FILE / FRONTEND_OUTPUT_DIR 写入 .env
 
 #define MyAppName "callfans"
-#define MyAppVersion "0.7.0"
+#define MyAppVersion "0.7.1"
 #define MyAppExeName "callfans-ui.exe"
 
 [Setup]
@@ -29,6 +29,8 @@ Source: "..\..\dist\callfans-service\*"; DestDir: "{app}\service"; Flags: recurs
 Source: "..\..\dist\callfans-ui\*"; DestDir: "{app}\ui"; Flags: recursesubdirs ignoreversion
 Source: "..\..\dist\callfans-cli\*"; DestDir: "{app}\cli"; Flags: recursesubdirs ignoreversion
 Source: "..\assets\docker-compose.yml"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "..\assets\.env"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "..\assets\get-ip.ps1"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\..\.env.example"; DestDir: "{app}"; DestName: ".env.example"; Flags: ignoreversion onlyifdoesntexist
 
 [Registry]
@@ -55,6 +57,7 @@ Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F"; Flags: runh
 [Code]
 var
   DeployPage: TInputDirWizardPage;
+  TimezonePage: TInputQueryWizardPage;
 
 procedure InitializeWizard;
 begin
@@ -66,6 +69,37 @@ begin
     False, '');
   DeployPage.Add('平台部署根目录(&R):');
   DeployPage.Values[0] := 'C:\callfans_standard';
+
+  // 平台时区（写入部署 .env 的 TIMEZONE）
+  TimezonePage := CreateInputQueryPage(wpSelectDir,
+    '时区设置', '平台容器使用的时区',
+    '将写入部署目录 .env 的 TIMEZONE（如 Asia/Shanghai、UTC）。');
+  TimezonePage.Add('时区(&T):');
+  TimezonePage.Values[0] := 'Asia/Shanghai';
+end;
+
+{ 探测宿主机 IPv4（powershell 脚本过滤回环/APIPA/Hyper-V 网卡，输出重定向到临时文件） }
+function DetectHostIP(var IP: String): Boolean;
+var
+  ResultCode: Integer;
+  TmpFile: String;
+  Lines: TArrayOfString;
+begin
+  Result := False;
+  IP := '';
+  TmpFile := ExpandConstant('{tmp}\cf_hostip.txt');
+  Exec(ExpandConstant('{cmd}'),
+       '/C powershell -NoProfile -ExecutionPolicy Bypass -File "' +
+       ExpandConstant('{app}\assets\get-ip.ps1') + '" > "' + TmpFile + '" 2>nul',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if FileExists(TmpFile) and LoadStringsFromFile(TmpFile, Lines) then
+    if GetArrayLength(Lines) > 0 then
+    begin
+      IP := Trim(Lines[0]);
+      if Pos('.', IP) > 0 then
+        Result := True;
+    end;
+  DeleteFile(TmpFile);
 end;
 
 function GetDeployDir(Param: String): String;
@@ -120,6 +154,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
   DeployDir, EnvPath, ComposeSrc, ComposeDst: String;
+  DeployEnv, HostIP: String;
 begin
   if CurStep <> ssPostInstall then
     Exit;
@@ -144,7 +179,24 @@ begin
     FileCopy(ComposeSrc, ComposeDst, False);
   end;
 
-  // .env：不存在则从示例生成，然后写入两个根目录与派生配置
+  // 部署 .env：不存在则从模板生成（存在则保留现场改过的密码等）
+  DeployEnv := AddBackslash(DeployDir) + '.env';
+  if not FileExists(DeployEnv) then
+  begin
+    if FileExists(AddBackslash(DeployDir) + '.env.bak') then
+      FileCopy(AddBackslash(DeployDir) + '.env.bak', DeployEnv, False)
+    else
+      FileCopy(ExpandConstant('{app}\assets\.env'), DeployEnv, False);
+  end;
+  // TIMEZONE（向导输入）与 HOST_IP（自动探测）每次安装都写入部署 .env
+  if TimezonePage.Values[0] <> '' then
+    SetEnvValue(DeployEnv, 'TIMEZONE', TimezonePage.Values[0]);
+  if DetectHostIP(HostIP) then
+    SetEnvValue(DeployEnv, 'HOST_IP', HostIP)
+  else
+    SetEnvValue(DeployEnv, 'HOST_IP', '127.0.0.1');
+
+  // 应用自身 .env：不存在则从示例生成，然后写入两个根目录与派生配置
   EnvPath := ExpandConstant('{app}\.env');
   if not FileExists(EnvPath) then
     FileCopy(ExpandConstant('{app}\.env.example'), EnvPath, False);

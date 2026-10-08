@@ -33,7 +33,10 @@ from ..core.local import StateStore
 from ..core.models import UpdatePlan
 from ..core.sync.config import CloudSyncConfig, SyncConfigError
 from ..core.sync.runtime import SqlSyncRuntime
+from ..core.host_ip import detect_host_ip
 from ..core.selfupdate import fetch_latest, is_newer
+from ..core.updaters.compose_env import read_env, write_env
+from ..core.updaters.docker_cli import DockerCLI
 from ..core.updaters.runner import UpdateRunner
 from ..paths import log_file, runtime_file, state_file
 from .hub import EventHub
@@ -240,6 +243,7 @@ def create_app(
             "pending_count": len(state.plan.pending) if state.plan else 0,
             "error": state.error,
             "latest_release": state.latest_release,
+            "host_ip": _deploy_host_ip(),
             "sqlsync": StateStore(state_file()).get("sqlsync"),
         }
 
@@ -349,6 +353,47 @@ def create_app(
         report["items"] = items + report["items"]
         report["summary"] = summary
         return report
+
+    def _deploy_host_ip() -> str | None:
+        """部署 .env 当前的 HOST_IP（status 展示用）。"""
+        if not cfg.compose_file:
+            return None
+        from pathlib import Path as _P
+
+        return read_env(_P(cfg.compose_file).parent / ".env").get("HOST_IP")
+
+    def _refresh_host_ip_impl() -> dict:
+        """探测宿主机 IP → 写部署 .env → 重建 xray-rest（其 environment 引用 HOST_IP）。"""
+        from pathlib import Path as _P
+
+        ip = detect_host_ip()
+        if ip is None:
+            raise RuntimeError("无法探测宿主机 IP（无可用网络接口）")
+        compose_file = _P(cfg.compose_file)
+        env_path = compose_file.parent / ".env"
+        write_env(env_path, {"HOST_IP": ip})
+        log.info("宿主机 IP 刷新为 %s（已写入 %s）", ip, env_path)
+        recreated, warn = False, None
+        try:
+            d = DockerCLI()
+            d.version_ok()
+            # environment 变了必须 recreate 才生效；xray-rest 不依赖其他服务
+            d.compose_up(compose_file, "xray-rest", force_recreate=True)
+            recreated = True
+        except Exception as e:
+            warn = f"xray-rest 未重建（{type(e).__name__}: {e}）——IP 已写入 .env，" \
+                   "容器下次重建时生效"
+            log.warning(warn)
+        return {"ip": ip, "recreated": recreated, "error": warn}
+
+    @app.post("/api/v1/host-ip/refresh")
+    async def refresh_host_ip() -> dict:
+        if not cfg.compose_file:
+            raise HTTPException(status_code=400, detail="COMPOSE_FILE 未配置")
+        try:
+            return await anyio.to_thread.run_sync(_refresh_host_ip_impl)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.websocket("/api/v1/events")
     async def events(ws: WebSocket, token: str = Query("")):
