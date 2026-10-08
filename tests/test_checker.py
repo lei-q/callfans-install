@@ -209,3 +209,78 @@ def test_plan_persisted_to_state(tmp_path):
     st2 = StateStore(tmp_path / "state.json")
     assert st2.last_plan["pending"][0]["name"] == "callfans/web"
     assert st2.last_plan["checked_at"] == plan.checked_at
+
+
+# ---------- base（compose 第三方镜像，首次安装场景） ----------
+
+
+COMPOSE_TEXT = """\
+services:
+  callfans-db:
+    image: mysql:8.0.24
+    container_name: callfans-db
+  callfans-admin:
+    image: ${HARBOR_REGISTRY}/callfans/callfans-admin:${CALLFANS_ADMIN_TAG}
+    container_name: callfans-admin
+  redis:
+    image: redis:5.0.14
+"""
+
+
+def _compose_cfg(tmp_path, **kw):
+    f = tmp_path / "docker-compose.yml"
+    f.write_text(COMPOSE_TEXT, encoding="utf-8")
+    return make_cfg(compose_file=f, **kw)
+
+
+def test_base_image_missing_shown_for_first_install(tmp_path):
+    """本地无 mysql 镜像 → base 待安装项（首次安装）。"""
+    harbor = FakeHarbor(repos={})
+    plan = run_checker(harbor, docker_rows=[], state=StateStore(tmp_path / "s.json"),
+                       cfg=_compose_cfg(tmp_path))
+    types = {(p.type, p.name) for p in plan.pending}
+    assert ("base", "mysql") in types
+    assert ("base", "redis") in types
+    mysql = next(p for p in plan.pending if p.name == "mysql")
+    assert mysql.new == "8.0.24" and mysql.old is None
+    assert mysql.alias == "callfans-db"  # 携带 compose 服务名
+    assert "callfans-db" in mysql.changelog
+
+
+def test_base_image_present_not_pending(tmp_path):
+    harbor = FakeHarbor(repos={})
+    rows = [DockerImage("mysql", "8.0.24", "sha256:a"),
+            DockerImage("redis", "5.0.14", "sha256:b")]
+    plan = run_checker(harbor, docker_rows=rows, state=StateStore(tmp_path / "s.json"),
+                       cfg=_compose_cfg(tmp_path))
+    assert [p for p in plan.pending if p.type == "base"] == []
+
+
+def test_base_image_tag_mismatch_pending(tmp_path):
+    """compose 版本与本地不同（8.0.20 → 8.0.24）→ 待安装。"""
+    harbor = FakeHarbor(repos={})
+    rows = [DockerImage("mysql", "8.0.20", "sha256:a")]
+    plan = run_checker(harbor, docker_rows=rows, state=StateStore(tmp_path / "s.json"),
+                       cfg=_compose_cfg(tmp_path))
+    mysql = next(p for p in plan.pending if p.name == "mysql")
+    assert mysql.new == "8.0.24"
+
+
+def test_harbor_repo_not_in_compose_skipped_when_compose_set(tmp_path):
+    """配了 compose 时，不在 compose 里的 harbor server 仓库不再报待更新。"""
+    harbor = FakeHarbor(repos={
+        "callfans/api": [mk("callfans/api", "20260912132921-123a066", "2026-09-12T13:29:21Z")],
+    })
+    plan = run_checker(harbor, docker_rows=[], state=StateStore(tmp_path / "s.json"),
+                       cfg=_compose_cfg(tmp_path))
+    assert "callfans/api" not in {p.name for p in plan.pending}
+
+
+def test_no_compose_keeps_old_behavior(tmp_path):
+    """未配 compose → 全部 harbor 仓库照旧检查（向后兼容）。"""
+    harbor = FakeHarbor(repos={
+        "callfans/api": [mk("callfans/api", "20260912132921-123a066", "2026-09-12T13:29:21Z")],
+    })
+    plan = run_checker(harbor, docker_rows=[], state=StateStore(tmp_path / "s.json"),
+                       cfg=make_cfg())
+    assert "callfans/api" in {p.name for p in plan.pending}

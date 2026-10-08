@@ -366,3 +366,84 @@ def test_not_found_error_includes_ps_snapshot(compose_file, tmp_path):
     record = ServerUpdater(cfg, None, fake).update(make_item())
     assert record["result"] == "rolled_back"
     assert "docker ps -a" in record["error"]
+
+
+# ---------- base（compose 第三方镜像，首次安装） ----------
+
+
+BASE_COMPOSE = """\
+services:
+  callfans-db:
+    image: mysql:8.0.24
+    container_name: callfans-db
+  redis:
+    image: redis:5.0.14
+"""
+
+
+def _base_item(repo="mysql", tag="8.0.24", service="callfans-db"):
+    from callfans.core.models import PendingItem
+
+    return PendingItem(name=repo, type="base", old=None, new=tag,
+                       alias=service, changelog="镜像未安装")
+
+
+def test_base_first_install_pull_and_up(tmp_path):
+    """base 首装：无旧容器 → pull → compose up → 验证成功；不写 .env。"""
+    fake = FakeDocker(compose_file=None, templates={})
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(BASE_COMPOSE, encoding="utf-8")
+    # FakeDocker 按 templates 渲染——base 用完整 compose 行为模拟
+    fake.compose_file = compose_file
+
+    class _BaseFake(FakeDocker):
+        def compose_config(self, f):
+            return {"services": {"callfans-db": {"image": "mysql:8.0.24",
+                                                 "container_name": "callfans-db"}}}
+
+        def _rendered(self, service):
+            return "mysql:8.0.24"
+
+        def compose_up(self, f, service, force_recreate=False, on_line=None):
+            self.actions.append(f"up:{service}")
+            self._ups += 1
+            # base 镜像按 compose 原文拉起（mysql 无本地镜像）
+            self.containers["callfans-db"] = {"service": service,
+                                              "image_id": self.images["mysql:8.0.24"],
+                                              "running": True}
+
+        def pull(self, ref, on_line=None):
+            self.actions.append(f"pull:{ref}")
+            self._n += 1
+            self.images[ref] = f"img-{self._n}"
+
+        def compose_ps(self, f):
+            return [{"Name": n, "Service": c["service"]} for n, c in self.containers.items()]
+
+    fake = _BaseFake(compose_file, {})
+    cfg = make_cfg(compose_file=compose_file, health_wait_seconds=2)
+    state = StateStore(tmp_path / "state.json")
+
+    record = ServerUpdater(cfg, state, fake).update(_base_item())
+
+    assert record["result"] == "success", record["error"]
+    joined = " ".join(fake.actions)
+    assert "pull:mysql:8.0.24" in joined       # 按原文拉取
+    assert "up:callfans-db" in joined
+    assert "stop:" not in joined               # 无旧容器，不 stop
+    assert fake.containers["callfans-db"]["running"] is True
+    # base 不写 .env tag（无 ${VAR}）
+    assert not (compose_file.parent / ".env").exists() or "TAG" not in (
+        compose_file.parent / ".env").read_text(encoding="utf-8")
+    # base 不写 server 记账（非版本管理）
+    assert state.get("server") is None
+
+
+def test_base_not_in_compose_fails_clearly(tmp_path):
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(BASE_COMPOSE, encoding="utf-8")
+    fake = FakeDocker(compose_file, {})
+    cfg = make_cfg(compose_file=compose_file)
+    record = ServerUpdater(cfg, None, fake).update(_base_item(repo="postgres", tag="16"))
+    assert record["result"] == "failed"
+    assert "未找到镜像 postgres" in record["error"]

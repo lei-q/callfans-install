@@ -38,8 +38,10 @@ class Config:
     harbor_password: str
     check_interval_hours: float = 6.0
     tag_exclude: list[str] = field(default_factory=lambda: ["latest", "dev"])
-    compose_file: Path | None = None          # M2 使用
-    frontend_output_dir: Path | None = None   # M2 使用
+    app_root: Path | None = None              # 更新程序根目录（安装器写入）
+    deploy_root: Path | None = None           # 平台部署根目录（安装器写入）
+    compose_file: Path | None = None
+    frontend_output_dir: Path | None = None
     mysql_host: str | None = None             # M2 使用
     mysql_port: int = 3306
     mysql_user: str | None = None
@@ -69,6 +71,8 @@ class Config:
             harbor_password=_get("HARBOR_PASSWORD", _DEFAULT_HARBOR_PASSWORD),
             check_interval_hours=float(_get("CHECK_INTERVAL_HOURS", "6")),
             tag_exclude=[t.strip() for t in _get("TAG_EXCLUDE", "latest,dev").split(",") if t.strip()],
+            app_root=Path(p) if (p := _get("APP_ROOT")) else None,
+            deploy_root=Path(p) if (p := _get("DEPLOY_ROOT")) else None,
             compose_file=Path(p) if (p := _get("COMPOSE_FILE")) else None,
             frontend_output_dir=Path(p) if (p := _get("FRONTEND_OUTPUT_DIR")) else None,
             mysql_host=_get("MYSQL_HOST", _DEFAULT_MYSQL_HOST),

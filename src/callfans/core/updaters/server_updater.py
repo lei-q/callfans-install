@@ -16,7 +16,7 @@ from pathlib import Path
 from ...config import Config
 from ..compare import is_version_tag, tag_timestamp
 from ..local import DockerError, StateStore, docker_images, harbor_repo_of
-from ..models import PendingItem
+from ..models import TYPE_BASE, PendingItem
 from .compose_env import (
     extract_tag_var, find_image_template, has_unresolved_vars, iter_image_templates,
     read_env, read_text_loose, render_ref, strip_tag, strip_vars, write_env,
@@ -95,8 +95,10 @@ class ServerUpdater:
         self.on_event = on_event or (lambda *a, **k: None)
 
     def update(self, item: PendingItem) -> dict:
+        """server：版本 tag 注入 ${VAR}；base：第三方镜像按 compose 原文拉取（无注入）。"""
+        is_base = item.type == TYPE_BASE
         record = {
-            "name": item.name, "type": "server", "old": item.old, "new": item.new,
+            "name": item.name, "type": item.type, "old": item.old, "new": item.new,
             "result": "failed", "error": None,
         }
         if not self.cfg.compose_file:
@@ -108,29 +110,38 @@ class ServerUpdater:
         except OSError as e:
             record["error"] = f"compose 文件读取失败: {e}"
             return record
-        template = find_image_template(text, item.name, self.cfg.harbor_project)
-        if template is None:
-            record["error"] = f"compose.yml 未找到 {item.name} 的 image 定义"
-            return record
-        var = extract_tag_var(template)
-        if var is None:
-            record["error"] = f"{item.name} 的 image 未使用 ${{VAR}} 形式（Q5）: {template}"
-            return record
+        if is_base:
+            template = self._find_base_template(text, item.name)
+            if template is None:
+                record["error"] = f"compose.yml 未找到镜像 {item.name} 的定义"
+                return record
+            var = None
+        else:
+            template = find_image_template(text, item.name, self.cfg.harbor_project)
+            if template is None:
+                record["error"] = f"compose.yml 未找到 {item.name} 的 image 定义"
+                return record
+            var = extract_tag_var(template)
+            if var is None:
+                record["error"] = f"{item.name} 的 image 未使用 ${{VAR}} 形式（Q5）: {template}"
+                return record
         env_path = compose_file.parent / ".env"
         env_values = read_env(env_path)
-        old_tag = env_values.get(var)
+        old_tag = env_values.get(var) if var else None
 
         try:
             cfg_json = self.docker.compose_config(compose_file)
         except DockerError as e:
             record["error"] = f"compose 解析失败: {e}"
             return record
-        service = self._match_service(cfg_json, item.name)
+        service = (self._match_base_service(cfg_json, item.name) if is_base
+                   else self._match_service(cfg_json, item.name))
         if service is None:
             record["error"] = f"compose 服务中未匹配到镜像 {item.name}"
             return record
         # 让 .env 成为 tag 唯一事实源（compose 调用时剔除 shell 环境变量覆盖）
-        self.docker.env_exclusions.add(var)
+        if var:
+            self.docker.env_exclusions.add(var)
 
         cname = (cfg_json.get("services", {}).get(service, {}) or {}).get("container_name")
         old_ctn = self._find_container(compose_file, service, container_name=cname)
@@ -148,7 +159,8 @@ class ServerUpdater:
                 # 旧容器可能属于其他 compose 项目，compose ps 不一定能找到）
                 self.docker.rm(old_ctn)
 
-            new_ref = render_ref(template, item.new, var, env_values)
+            new_ref = (render_ref(template, item.new, None, env_values) if is_base
+                       else render_ref(template, item.new, var, env_values))
             if has_unresolved_vars(new_ref):
                 raise UpdateFailure(f"镜像引用存在未定义变量: {new_ref}（检查 compose 同目录 .env）")
             self._emit(item, "pull", ref=new_ref)
@@ -162,18 +174,19 @@ class ServerUpdater:
                 if any(k in line for k in pull_milestones) or now - last_pull_evt[0] >= 2.0:
                     last_pull_evt[0] = now
                     self.on_event("update_progress", {
-                        "item": _item.name, "type": "server",
+                        "item": _item.name, "type": _item.type,
                         "stage": "pull_progress", "line": line[:200],
                     })
 
             self.docker.pull(new_ref, on_line=on_pull_line)
             new_image_id = self.docker.inspect_image(new_ref).get("Id")
 
-            write_env(env_path, {var: item.new})
-            env_written = True
+            if var:
+                write_env(env_path, {var: item.new})
+                env_written = True
             self._emit(item, "up", service=service)
             self.docker.compose_up(compose_file, service, on_line=lambda l, _item=item: self.on_event(
-                "update_progress", {"item": _item.name, "type": "server",
+                "update_progress", {"item": _item.name, "type": _item.type,
                                     "stage": "up_progress", "line": l[:200]}))
 
             new_ctn = self._find_container(compose_file, service, container_name=cname)
@@ -199,7 +212,8 @@ class ServerUpdater:
                         self.docker.rmi(old_image_id)
                 except DockerError as e:
                     warns.append(f"旧镜像清理失败: {e}")
-            self._record_state(item.name, item.new, new_image_id)
+            if not is_base:
+                self._record_state(item.name, item.new, new_image_id)
             record.update(result="success", error="; ".join(warns) or None)
             return record
         except Exception as e:
@@ -215,7 +229,22 @@ class ServerUpdater:
     # ---------- 内部 ----------
 
     def _emit(self, item: PendingItem, stage: str, **extra) -> None:
-        self.on_event("update_progress", {"item": item.name, "type": "server", "stage": stage, **extra})
+        self.on_event("update_progress",
+                      {"item": item.name, "type": item.type, "stage": stage, **extra})
+
+    def _find_base_template(self, text: str, repo: str) -> str | None:
+        """按镜像仓库名匹配 compose 原文中的 image 行（第三方镜像无 ${VAR} 或含
+        registry 变量均可）。"""
+        for template in iter_image_templates(text):
+            if strip_tag(strip_vars(template)) == repo:
+                return template
+        return None
+
+    def _match_base_service(self, cfg_json: dict, repo: str) -> str | None:
+        for svc, scfg in (cfg_json.get("services") or {}).items():
+            if strip_tag(scfg.get("image") or "") == repo:
+                return svc
+        return None
 
     def _match_service(self, cfg_json: dict, repo_full: str) -> str | None:
         for svc, scfg in (cfg_json.get("services") or {}).items():
@@ -261,7 +290,7 @@ class ServerUpdater:
         stable = 0
         while time.monotonic() < deadline:
             self.on_event("update_progress", {
-                "item": item.name, "type": "server", "stage": "verify",
+                "item": item.name, "type": item.type, "stage": "verify",
                 "remaining": max(0, int(deadline - time.monotonic())),
             })
             state = self.docker.inspect_container(new_ctn).get("State", {})

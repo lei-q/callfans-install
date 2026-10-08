@@ -1,0 +1,241 @@
+version: '3.8'
+
+networks:
+  callfans-net:
+    driver: bridge
+
+services:
+  callfans-db:
+    image: mysql:8.0.24
+    container_name: callfans-db
+    networks:
+      - callfans-net
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+      - ./mysql/config/my.cnf:/etc/mysql/mysql.conf.d/mysqld.cnf
+      - ./mysql/logs:/var/log/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d
+    environment:
+      - TZ=${TIMEZONE}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    restart: always
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 10s
+
+  redis:
+    image: redis:5.0.14
+    container_name: redis
+    networks:
+      - callfans-net
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis/config/redis.conf:/etc/redis/redis.conf
+      - ./redis/logs:/var/log/redis
+      - ./redis/data:/data
+    environment:
+      - TZ=${TIMEZONE}
+    restart: always
+
+  minio:
+    image: minio/minio:RELEASE.2022-02-26T02-54-46Z
+    container_name: minio
+    networks:
+      - callfans-net
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./minio/config:/root/.minio
+      - ./minio/data:/data
+      - ./minio/logs:/var/log/minio
+    environment:
+      - TZ=${TIMEZONE}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    restart: always
+    command: server /data --console-address :9001
+
+  callfans-admin:
+    user: "0"
+    image: ${HARBOR_REGISTRY}/callfans/callfans-admin:${CALLFANS_ADMIN_TAG}
+    container_name: callfans-admin
+    networks:
+      - callfans-net
+    ports:
+      - "8080:8080"
+      - "9997:9997"
+    volumes:
+      - ./server/admin/logs:/app/logs
+      - ./server/admin/config:/app/config
+      - ./server/admin/license/license.lic:/opt/license/license.lic
+      - ./server/admin/license/public_key.pem:/opt/license/public_key.pem
+      - ./server/admin/data/download_file.sh:/opt/download_file.sh
+    environment:
+      - TZ=${TIMEZONE}
+      - ROOT_DIR=${PWD}
+    restart: always
+    depends_on:
+      callfans-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+
+  callfans-platform:
+    image: ${HARBOR_REGISTRY}/callfans/callfans-platform:${CALLFANS_PLATFORM_TAG}
+    container_name: callfans-platform
+    networks:
+      - callfans-net
+    ports:
+      - "8899:8899"
+    volumes:
+      - ./server/platform/logs:/app/logs
+      - ./server/platform/config:/app/config
+    environment:
+      - TZ=${TIMEZONE}
+      - ROOT_DIR=${PWD}
+    restart: always
+    depends_on:
+      callfans-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  scrcpy-live:
+    image: ${HARBOR_REGISTRY}/callfans/scrcpy-live:${SCRCPY_LIVE_TAG}
+    container_name: scrcpy-live
+    networks:
+      - callfans-net
+    ports:
+      - "1935:1935"
+      - "3344:3344"
+      - "8000:8000"
+    environment:
+      - TZ=${TIMEZONE}
+      - ROOT_DIR=${PWD}
+    restart: always
+
+  xray-core:
+    image: teddysun/xray:latest
+    container_name: xray-core
+    networks:
+      - callfans-net
+    ports:
+      - "10000-10100:10000-10100"
+    volumes:
+      - ./server/xray/config.json:/etc/xray/config.json:rw
+      - ./server/xray/geoip.dat:/usr/local/bin/geoip.dat
+      - ./server/xray/geosite.dat:/usr/local/bin/geosite.dat
+    environment:
+      - TZ=${TIMEZONE}
+      - ROOT_DIR=${PWD}
+    restart: always
+
+  xray-rest:
+    image: xray-rest
+    container_name: xray-rest
+    networks:
+      - callfans-net
+    ports:
+      - "8050:8000"
+    volumes:
+      - ./server/xray/config.json:/etc/xray/config.json:rw
+      - ./server/xray/geoip.dat:/usr/local/bin/geoip.dat
+      - ./server/xray/geosite.dat:/usr/local/bin/geosite.dat
+    environment:
+      - TZ=${TIMEZONE}
+      - HOST_IP=${HOST_IP}
+      - ROOT_DIR=${PWD}
+      - XRAY_SERVER=xray-core:10085
+    restart: always
+    depends_on:
+      - xray-core
+
+  rabbitmq:
+    image: rabbitmq:management
+    container_name: rabbitmq
+    networks:
+      - callfans-net
+    ports:
+      - "15672:15672"
+      - "5672:5672"
+    volumes:
+      - ./rabbitmq/data:/var/lib/rabbitmq
+    environment:
+      - TZ=${TIMEZONE}
+      - ROOT_DIR=${PWD}
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+    restart: always
+
+  callfans-rpa:
+    image: ${HARBOR_REGISTRY}/callfans/callfans-rpa:${CALLFANS_RPA_TAG}
+    container_name: callfans-rpa
+    networks:
+      - callfans-net
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./server/rpa/config/config.yaml:/app/rpa/config.yaml
+      - ./server/rpa/config/config.yaml:/app/rpa/config-docker.yaml
+    environment:
+      - TZ=${TIMEZONE}
+      - ROOT_DIR=${PWD}
+      - NETWORK_MODE=${NETWORK_MODE}
+    restart: always
+    depends_on:
+      callfans-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+
+  xxl-job-admin:
+    image: xuxueli/xxl-job-admin:2.4.0
+    container_name: xxl-job-admin
+    networks:
+      - callfans-net
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./server/xxl_job/config/application.properties:/config/application.properties
+      - ./server/xxl_job/logs:/data/applogs
+    environment:
+      - TZ=${TIMEZONE}
+      - ROOT_DIR=${PWD}
+    restart: always
+    depends_on:
+      callfans-db:
+        condition: service_healthy
+
+  nginx-web:
+    image: nginx:1.18.0
+    container_name: nginx-web
+    networks:
+      - callfans-net
+    ports:
+      - "80:80"
+      - "443:443"
+      - "5092:5092"
+    volumes:
+      - ./nginx/config:/etc/nginx/conf.d/
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/logs:/var/log/nginx
+      - ./nginx/cert/cert.pem:/etc/nginx/cert.pem
+      - ./nginx/cert/key.pem:/etc/nginx/key.pem
+      - ./nginx/front:/usr/share/nginx/html/
+    environment:
+      - TZ=${TIMEZONE}
+      - ROOT_DIR=${PWD}
+    restart: always
+    depends_on:
+      - callfans-admin
+      - callfans-platform
+      - scrcpy-live

@@ -12,9 +12,11 @@ from datetime import datetime, timezone
 
 from ..config import Config
 from .compare import effective_time, find_leading, is_version_tag, pick_latest, tag_timestamp
+from .compose_scan import ComposeImage, local_has_image, scan_compose_images
 from .harbor import HarborClient
 from .local import DockerError, StateStore, docker_images, harbor_repo_of
 from .models import (
+    TYPE_BASE,
     TYPE_FRONTEND,
     TYPE_SERVER,
     TYPE_SQL,
@@ -32,6 +34,16 @@ _MIN = datetime.min.replace(tzinfo=timezone.utc)
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def _tag_of(ref: str) -> str | None:
+    """从镜像引用取 tag（无 tag 视为 latest）。"""
+    from .updaters.compose_env import strip_tag
+
+    ref = ref.split("@", 1)[0]
+    if ref == strip_tag(ref):
+        return None  # 无 tag 部分
+    return ref.rsplit(":", 1)[1]
 
 
 class Checker:
@@ -56,18 +68,27 @@ class Checker:
             self.state = state
 
         local: dict[str, dict[str, str]] = {}  # repo 全名 -> {tag: digest}
+        local_images: list = []                # 全量本地镜像（含第三方）
         docker_ok = True
         try:
             for img in self._docker_images():
+                local_images.append(img)
                 repo = harbor_repo_of(img.repository, self.cfg.harbor_project)
                 if repo:
                     local.setdefault(repo, {})[img.tag] = img.digest
         except DockerError as e:
-            log.warning("docker 不可用，本次跳过 server 类制品: %s", e)
+            log.warning("docker 不可用，本次跳过 server/base 类制品: %s", e)
             docker_ok = False
 
         exclude = set(self.cfg.tag_exclude)
         pending: list[PendingItem] = []
+        # compose 清单（部署真值来源）：harbor 托管镜像走版本比对，
+        # 第三方镜像（mysql/redis 等）只查存在性（首次安装场景）
+        compose_images: list[ComposeImage] = []
+        if self.cfg.compose_file and docker_ok:
+            compose_images = scan_compose_images(self.cfg.compose_file, self.cfg.harbor_project)
+        harbor_managed = {ci.harbor_repo for ci in compose_images if ci.is_harbor}
+
         for repo in self.harbor.list_repos():
             tags = [t for t in self.harbor.repo_tags(repo) if is_version_tag(t.tag, exclude)]
             if not tags:
@@ -82,9 +103,30 @@ class Checker:
                 log.debug("sql 仓库 %s 由 sqlsync 域处理，制品流忽略", repo)
                 continue
             else:
+                # 配了 compose 时，server 类只报 compose 实际引用的镜像
+                # （未部署的仓库报"待更新"会误导——更新也无处落）
+                if compose_images and repo not in harbor_managed:
+                    log.debug("harbor 仓库 %s 不在 compose 清单中，跳过", repo)
+                    continue
                 item = self._server_repo(repo, tags, local if docker_ok else None)
             if item is not None:
                 pending.append(item)
+
+        # 第三方基础镜像：不存在 → 待安装（版本由 compose 固定，不比版本）
+        for ci in compose_images:
+            if ci.is_harbor:
+                continue
+            tag = _tag_of(ci.ref)
+            if local_has_image(local_images, ci.repo, tag):
+                continue
+            pending.append(PendingItem(
+                name=ci.repo,
+                type=TYPE_BASE,
+                old=None,
+                new=tag or "latest",
+                changelog=f"compose 服务 {ci.service}：镜像未安装，将拉取 {ci.ref}",
+                alias=ci.service,  # 复用 alias 字段携带 compose 服务名
+            ))
 
         checked_at = datetime.now(timezone.utc).isoformat()
         plan = UpdatePlan(checked_at=checked_at, pending=pending)

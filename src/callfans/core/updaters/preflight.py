@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from ...config import Config
-from ..models import TYPE_FRONTEND, TYPE_SERVER, UpdatePlan
+from ..models import TYPE_BASE, TYPE_FRONTEND, TYPE_SERVER, UpdatePlan
 from .compose_env import (
     extract_tag_var, find_image_template, iter_image_templates, read_env,
     read_text_loose, vars_in,
@@ -28,7 +28,7 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None) ->
     errors: list[str] = []
     types = {p.type for p in plan.pending}
 
-    if TYPE_SERVER in types:
+    if {TYPE_SERVER, TYPE_BASE} & types:
         if not cfg.compose_file:
             errors.append("COMPOSE_FILE 未配置")
         else:
@@ -52,7 +52,7 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None) ->
                         v for t in templates for v in vars_in(t)
                         if v != extract_tag_var(t) and not env_values.get(v)
                     }
-                    for p in [x for x in plan.pending if x.type == TYPE_SERVER]:
+                    for p in [x for x in plan.pending if x.type == TYPE_SERVER]:  # base 无 ${VAR} 要求
                         template = find_image_template(text, p.name, cfg.harbor_project)
                         if template is None or extract_tag_var(template) is None:
                             errors.append(f"{p.name}: compose image 未使用 ${{VAR}} 形式（Q5）")

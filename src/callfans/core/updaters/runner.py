@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from ...config import Config
 from ...paths import history_file
 from .. import history
-from ..models import TYPE_FRONTEND, TYPE_SERVER, PendingItem, UpdatePlan
+from ..models import TYPE_BASE, TYPE_FRONTEND, TYPE_SERVER, PendingItem, UpdatePlan
 from .frontend_updater import FrontendUpdater
 from .preflight import PreflightError, preflight
 from .server_updater import ServerUpdater
@@ -21,7 +21,8 @@ from .server_updater import ServerUpdater
 log = logging.getLogger(__name__)
 
 # Q9（2026-09-20）：sql 制品流移除，SQL 更新由 sqlsync 域承担
-TYPE_ORDER = {TYPE_SERVER: 0, TYPE_FRONTEND: 1}
+# 基础镜像（mysql 等）先起，再业务镜像，最后前端（首装依赖顺序）
+TYPE_ORDER = {TYPE_BASE: 0, TYPE_SERVER: 1, TYPE_FRONTEND: 2}
 
 
 class UpdateRunner:
@@ -42,7 +43,7 @@ class UpdateRunner:
     def _updater_for(self, type_: str):
         if self._updaters is not None:
             return self._updaters[type_]
-        if type_ == TYPE_SERVER:
+        if type_ in (TYPE_SERVER, TYPE_BASE):  # base 复用同一执行器（无 tag 注入模式）
             return ServerUpdater(self.cfg, self.state, self.docker, self.on_event)
         if type_ == TYPE_FRONTEND:
             return FrontendUpdater(self.cfg, self.state, self.puller, self.on_event)
@@ -73,7 +74,7 @@ class UpdateRunner:
             "total": len(items),
             "items": [{"name": i.name, "type": i.type} for i in items],
         })
-        if TYPE_SERVER in {p.type for p in items}:
+        if {TYPE_SERVER, TYPE_BASE} & {p.type for p in items}:
             try:  # tag 变量不手写：缺失的按本地当前版本补齐（失败不阻断更新）
                 from .server_updater import backfill_tag_vars
 

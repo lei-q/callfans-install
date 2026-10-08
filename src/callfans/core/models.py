@@ -10,6 +10,7 @@ from typing import Any
 TYPE_SERVER = "server"
 TYPE_FRONTEND = "frontend"
 TYPE_SQL = "sql"
+TYPE_BASE = "base"  # compose 中的第三方镜像（mysql/redis 等，只查存在性）
 
 # annotation / Label 约定 key
 KEY_TYPE = "com.callfans.type"
@@ -32,7 +33,7 @@ class PendingItem:
     """一条待更新项（UpdatePlan 成员）。"""
 
     name: str                      # Harbor repo 全名，如 callfans/api
-    type: str                      # server / frontend / sqlsync
+    type: str                      # server / base / frontend / sqlsync
     old: str | None                # 当前版本 tag；None 表示本地未安装
     new: str | list[str]           # 目标 tag；sqlsync 为描述
     changelog: Any = None          # str；详情报告
