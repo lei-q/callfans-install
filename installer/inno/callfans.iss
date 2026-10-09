@@ -6,7 +6,7 @@
 ;       并把 APP_ROOT / DEPLOY_ROOT / COMPOSE_FILE / FRONTEND_OUTPUT_DIR 写入 .env
 
 #define MyAppName "callfans"
-#define MyAppVersion "0.7.1"
+#define MyAppVersion "0.7.2"
 #define MyAppExeName "callfans-ui.exe"
 
 [Setup]
