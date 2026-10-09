@@ -74,7 +74,7 @@ begin
   TimezonePage := CreateInputQueryPage(wpSelectDir,
     '时区设置', '平台容器使用的时区',
     '将写入部署目录 .env 的 TIMEZONE（如 Asia/Shanghai、UTC）。');
-  TimezonePage.Add('时区(&T):', False);  # 第二参数 APassword：普通输入不掩码
+  TimezonePage.Add('时区(&T):', False);  // 第二参数 APassword：普通输入不掩码
   TimezonePage.Values[0] := 'Asia/Shanghai';
 end;
 
