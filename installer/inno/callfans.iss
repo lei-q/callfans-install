@@ -9,7 +9,7 @@
 ;       事件处理器（InitializeWizard / CurPageChanged / CurStepChanged）之前
 
 #define MyAppName "callfans"
-#define MyAppVersion "0.7.4"
+#define MyAppVersion "0.7.5"
 #define MyAppExeName "callfans-ui.exe"
 
 [Setup]

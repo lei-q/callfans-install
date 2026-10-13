@@ -251,11 +251,11 @@ def service_uninstall() -> None:
 
 def _sync_runtime(env: Path):
     """sqlsync 独立入口：不要求 Harbor 配置，仅加载 .env 后建运行时。"""
-    from dotenv import load_dotenv
+    from .config import load_env_loose
 
     env = _env_path(env)
     if env.exists():
-        load_dotenv(env)
+        load_env_loose(env)
     from .core.sync.config import CloudSyncConfig, SyncConfigError
     from .core.sync.runtime import SqlSyncRuntime
 

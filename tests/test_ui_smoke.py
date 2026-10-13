@@ -258,3 +258,19 @@ def test_quit_confirms_when_busy(qapp, monkeypatch):
     )
     w.request_quit()
     assert quit_calls == [1]
+
+
+def test_tray_controller_keeps_menu_reference(qapp):
+    """托盘右键菜单须持引用防 PySide GC（v0.7.4 实测：菜单对象被回收导致右键无菜单）。"""
+    from callfans.ui.main_window import MainWindow
+    from callfans.ui.tray import TrayController
+
+    w = MainWindow(poll_enabled=False)
+    tray = TrayController(w)
+    assert tray.menu is not None
+    assert tray.icon.contextMenu() is tray.menu  # C++ 侧菜单仍存活
+    # 菜单包含关键动作
+    actions = [a.text() for a in tray.menu.actions()]
+    for expect in ("打开主窗口", "检查更新", "立即更新", "退出"):
+        assert expect in actions
+    assert tray.icon.contextMenu() is not None

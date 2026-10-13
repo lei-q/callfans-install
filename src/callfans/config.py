@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dotenv import load_dotenv
 
 # 默认值（.env 可不填，代码兜底；地址统一指向 47.87.66.98）
 _DEFAULT_HARBOR_API_URL = "http://47.87.66.98/"
@@ -19,6 +18,25 @@ _DEFAULT_MYSQL_PASSWORD = "123456"
 
 class ConfigError(Exception):
     """配置缺失或非法。"""
+
+
+def load_env_loose(env_path: Path) -> None:
+    """容错加载 .env：UTF-8 优先 → GBK（Windows 记事本 ANSI / 安装器写入）→ latin-1 兜底。
+
+    v0.7.4 实测：安装器 Inno 的 SaveStringsToFile 按 ANSI(GBK) 写回 .env，
+    中文注释变 GBK 字节，python-dotenv 按 UTF-8 读直接崩（UnicodeDecodeError）。
+    latin-1 永不失败（乱码但不崩），服务可用 ASCII 键值正常。
+    """
+    from dotenv import load_dotenv
+
+    for enc in ("utf-8", "gbk", "latin-1"):
+        try:
+            load_dotenv(env_path, encoding=enc)
+            return
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            return  # 其他错误（文件锁等）跳过，走默认值
 
 
 def _get(key: str, default: str | None = None) -> str | None:
@@ -55,7 +73,7 @@ class Config:
     def from_env(cls, env_path: Path | str = ".env") -> "Config":
         env_path = Path(env_path)
         if env_path.exists():
-            load_dotenv(env_path)
+            load_env_loose(env_path)
 
         cfg = cls(
             harbor_api_url=_get("HARBOR_API_URL", _DEFAULT_HARBOR_API_URL).rstrip("/"),

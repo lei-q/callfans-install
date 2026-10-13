@@ -72,12 +72,15 @@ class TrayController:
         self.window = window
         self.icon = QSystemTrayIcon(_make_icon())
         self.icon.setToolTip("助手管家")
-        menu = QMenu()
-        act_show = QAction("打开主窗口")
-        act_check = QAction("检查更新")
-        act_update = QAction("立即更新")
-        act_checkver = QAction("检查新版本…")
-        act_quit = QAction("退出")
+        # 持有菜单引用防 GC：PySide6 的 setContextMenu 不接管所有权，
+        # 局部变量被回收后 C++ 菜单随之销毁 → 右键无菜单（实测 bug）
+        self.menu = QMenu()
+        menu = self.menu
+        act_show = QAction("打开主窗口", menu)  # parent 归 menu 所有，防 GC
+        act_check = QAction("检查更新", menu)  # parent 归 menu 所有，防 GC
+        act_update = QAction("立即更新", menu)  # parent 归 menu 所有，防 GC
+        act_checkver = QAction("检查新版本…", menu)  # parent 归 menu 所有，防 GC
+        act_quit = QAction("退出", menu)  # parent 归 menu 所有，防 GC
         act_show.triggered.connect(self._show_window)
         act_check.triggered.connect(window.on_check_clicked)
         act_update.triggered.connect(window.on_update_clicked)

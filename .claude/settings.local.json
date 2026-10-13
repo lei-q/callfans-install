@@ -23,7 +23,10 @@
       "Bash(sed -i '' 's/#define MyAppVersion \"0.7.2\"/#define MyAppVersion \"0.7.3\"/' installer/inno/callfans.iss)",
       "Bash(sed -i '' 's/version = \"0.7.3\"/version = \"0.7.4\"/' pyproject.toml)",
       "Bash(sed -i '' 's/__version__ = \"0.7.3\"/__version__ = \"0.7.4\"/' src/callfans/__init__.py)",
-      "Bash(sed -i '' 's/#define MyAppVersion \"0.7.3\"/#define MyAppVersion \"0.7.4\"/' installer/inno/callfans.iss)"
+      "Bash(sed -i '' 's/#define MyAppVersion \"0.7.3\"/#define MyAppVersion \"0.7.4\"/' installer/inno/callfans.iss)",
+      "Bash(sed -i '' 's/version = \"0.7.4\"/version = \"0.7.5\"/' pyproject.toml)",
+      "Bash(sed -i '' 's/__version__ = \"0.7.4\"/__version__ = \"0.7.5\"/' src/callfans/__init__.py)",
+      "Bash(sed -i '' 's/#define MyAppVersion \"0.7.4\"/#define MyAppVersion \"0.7.5\"/' installer/inno/callfans.iss)"
     ]
   }
 }
