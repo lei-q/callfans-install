@@ -5,6 +5,8 @@
 ; 部署: 安装时询问平台部署根目录，把 docker-compose.yml 复制过去，
 ;       并把 APP_ROOT / DEPLOY_ROOT / COMPOSE_FILE / FRONTEND_OUTPUT_DIR 写入 .env；
 ;       时区改为下拉选择（升级时预选部署 .env 已有值），与 HOST_IP 一并写入部署 .env
+; 注意：Inno Pascal 自上而下编译、无前向声明——辅助例程必须定义在引用它的
+;       事件处理器（InitializeWizard / CurPageChanged / CurStepChanged）之前
 
 #define MyAppName "callfans"
 #define MyAppVersion "0.7.3"
@@ -61,46 +63,7 @@ var
   TimezonePage: TWizardPage;
   TimezoneCombo: TNewComboBox;
 
-procedure InitializeWizard;
-var
-  TZLabel: TNewStaticText;
-begin
-  // 平台部署根目录（docker-compose.yml 落地处，前端/数据也在其下）
-  DeployPage := CreateInputDirPage(wpSelectDir,
-    '平台部署目录', '平台文件将部署到哪个目录？',
-    '安装程序会把 docker-compose.yml 复制到该目录，并写入 .env 的 ' +
-    'COMPOSE_FILE / FRONTEND_OUTPUT_DIR 配置。',
-    False, '');
-  DeployPage.Add('平台部署根目录(&R):');
-  DeployPage.Values[0] := 'C:\callfans_standard';
-
-  // 平台时区（写入部署 .env 的 TIMEZONE）：下拉选择，覆盖常用时区
-  TimezonePage := CreateCustomPage(DeployPage.ID,
-    '时区设置', '平台容器使用的时区');
-  TZLabel := TNewStaticText.Create(TimezonePage);
-  TZLabel.Caption := '将写入部署目录 .env 的 TIMEZONE，全部平台容器按此时区运行。'  // 页顶说明
-    + #13#10#13#10 + '时区(&T):';
-  TZLabel.WordWrap := True;
-  TZLabel.Width := TimezonePage.SurfaceWidth;
-  TZLabel.Parent := TimezonePage.Surface;
-  TZLabel.AdjustHeight;
-  TimezoneCombo := TNewComboBox.Create(TimezonePage);
-  TimezoneCombo.Style := csDropDownList;  // 只可选，不可自由输入
-  TimezoneCombo.Top := TZLabel.Top + TZLabel.Height + ScaleY(8);
-  TimezoneCombo.Width := TimezonePage.SurfaceWidth;
-  TimezoneCombo.Parent := TimezonePage.Surface;
-  AddTimezoneItems;
-  SelectTimezone('Asia/Shanghai');  // 兜底默认；进入该页时按部署 .env 再预选
-end;
-
-{ 进入时区页时按部署目录 .env 已有 TIMEZONE 预选（升级不丢现场选择） }
-procedure CurPageChanged(PageID: Integer);
-begin
-  if PageID = TimezonePage.ID then
-    if not SelectTimezone(
-           GetEnvValue(AddBackslash(DeployPage.Values[0]) + '.env', 'TIMEZONE')) then
-      SelectTimezone('Asia/Shanghai');
-end;
+{ ---------- 辅助例程（须先于事件处理器定义） ---------- }
 
 { 读取 .env 中某个键的值（KEY=VALUE 行；不存在或未设置返回 ''） }
 function GetEnvValue(const FileName, Key: String): String;
@@ -148,6 +111,36 @@ end;
 function GetDeployDir(Param: String): String;
 begin
   Result := DeployPage.Values[0];
+end;
+
+{ 设置 .env 中某个键：存在则替换，不存在则追加（保留其余内容与注释） }
+procedure SetEnvValue(const FileName, Key, Value: String);
+var
+  Lines: TArrayOfString;
+  I, N: Integer;
+  Found: Boolean;
+begin
+  N := 0;
+  if FileExists(FileName) then
+  begin
+    if not LoadStringsFromFile(FileName, Lines) then
+      N := 0
+    else
+      N := GetArrayLength(Lines);
+  end;
+  Found := False;
+  for I := 0 to N - 1 do
+    if Pos(Key + '=', Lines[I]) = 1 then
+    begin
+      Lines[I] := Key + '=' + Value;
+      Found := True;
+    end;
+  if not Found then
+  begin
+    SetArrayLength(Lines, N + 1);
+    Lines[N] := Key + '=' + Value;
+  end;
+  SaveStringsToFile(FileName, Lines, False);
 end;
 
 { 时区下拉填充：'城市 - IANA 时区名'，写入 .env 取 ' - ' 右侧部分 }
@@ -269,34 +262,47 @@ begin
     Result := Copy(S, Pos(' - ', S) + 3, Length(S) - Pos(' - ', S) - 2);
 end;
 
-{ 设置 .env 中某个键：存在则替换，不存在则追加（保留其余内容与注释） }
-procedure SetEnvValue(const FileName, Key, Value: String);
+{ ---------- 事件处理器 ---------- }
+
+procedure InitializeWizard;
 var
-  Lines: TArrayOfString;
-  I, N: Integer;
-  Found: Boolean;
+  TZLabel: TNewStaticText;
 begin
-  N := 0;
-  if FileExists(FileName) then
-  begin
-    if not LoadStringsFromFile(FileName, Lines) then
-      N := 0
-    else
-      N := GetArrayLength(Lines);
-  end;
-  Found := False;
-  for I := 0 to N - 1 do
-    if Pos(Key + '=', Lines[I]) = 1 then
-    begin
-      Lines[I] := Key + '=' + Value;
-      Found := True;
-    end;
-  if not Found then
-  begin
-    SetArrayLength(Lines, N + 1);
-    Lines[N] := Key + '=' + Value;
-  end;
-  SaveStringsToFile(FileName, Lines, False);
+  // 平台部署根目录（docker-compose.yml 落地处，前端/数据也在其下）
+  DeployPage := CreateInputDirPage(wpSelectDir,
+    '平台部署目录', '平台文件将部署到哪个目录？',
+    '安装程序会把 docker-compose.yml 复制到该目录，并写入 .env 的 ' +
+    'COMPOSE_FILE / FRONTEND_OUTPUT_DIR 配置。',
+    False, '');
+  DeployPage.Add('平台部署根目录(&R):');
+  DeployPage.Values[0] := 'C:\callfans_standard';
+
+  // 平台时区（写入部署 .env 的 TIMEZONE）：下拉选择，覆盖常用时区
+  TimezonePage := CreateCustomPage(DeployPage.ID,
+    '时区设置', '平台容器使用的时区');
+  TZLabel := TNewStaticText.Create(TimezonePage);
+  TZLabel.Caption := '将写入部署目录 .env 的 TIMEZONE，全部平台容器按此时区运行。'  // 页顶说明
+    + #13#10#13#10 + '时区(&T):';
+  TZLabel.WordWrap := True;
+  TZLabel.Width := TimezonePage.SurfaceWidth;
+  TZLabel.Parent := TimezonePage.Surface;
+  TZLabel.AdjustHeight;
+  TimezoneCombo := TNewComboBox.Create(TimezonePage);
+  TimezoneCombo.Style := csDropDownList;  // 只可选，不可自由输入
+  TimezoneCombo.Top := TZLabel.Top + TZLabel.Height + ScaleY(8);
+  TimezoneCombo.Width := TimezonePage.SurfaceWidth;
+  TimezoneCombo.Parent := TimezonePage.Surface;
+  AddTimezoneItems;
+  SelectTimezone('Asia/Shanghai');  // 兜底默认；进入该页时按部署 .env 再预选
+end;
+
+{ 进入时区页时按部署目录 .env 已有 TIMEZONE 预选（升级不丢现场选择） }
+procedure CurPageChanged(PageID: Integer);
+begin
+  if PageID = TimezonePage.ID then
+    if not SelectTimezone(
+           GetEnvValue(AddBackslash(DeployPage.Values[0]) + '.env', 'TIMEZONE')) then
+      SelectTimezone('Asia/Shanghai');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
