@@ -9,7 +9,7 @@
 ;       事件处理器（InitializeWizard / CurPageChanged / CurStepChanged）之前
 
 #define MyAppName "callfans"
-#define MyAppVersion "0.7.3"
+#define MyAppVersion "0.7.4"
 #define MyAppExeName "callfans-ui.exe"
 
 [Setup]
@@ -34,7 +34,7 @@ Source: "..\..\dist\callfans-cli\*"; DestDir: "{app}\cli"; Flags: recursesubdirs
 Source: "..\assets\docker-compose.yml"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\.env"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\get-ip.ps1"; DestDir: "{app}\assets"; Flags: ignoreversion
-Source: "..\..\.env.example"; DestDir: "{app}"; DestName: ".env.example"; Flags: ignoreversion onlyifdoesntexist
+Source: "..\..\.env.example"; DestDir: "{app}"; DestName: ".env.example"; Flags: ignoreversion
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
