@@ -97,14 +97,9 @@ class MainWindow(QMainWindow):
         self.btn_hostip = QPushButton("刷新 IP")
         self.btn_hostip.setToolTip("探测当前宿主机 IP，写入部署 .env 并重建 xray-rest 容器")
         self.btn_hostip.clicked.connect(self.on_refresh_host_ip)
-        self.btn_checkver = QPushButton("检查新版")
-        self.btn_checkver.setToolTip("检查本程序是否有新版本（可下载并自动安装）")
-        self.btn_checkver.clicked.connect(self.on_check_version_clicked)
-        self.btn_quit = QPushButton("退出")
-        self.btn_quit.setToolTip("退出程序（关闭窗口只会最小化到托盘）")
+        # 检查新版 / 退出 移至托盘右键菜单（tray.py），主窗口不再放按钮
         self.btn_check.clicked.connect(self.on_check_clicked)
         self.btn_update.clicked.connect(self.on_update_clicked)
-        self.btn_quit.clicked.connect(self.request_quit)
         QShortcut(QKeySequence.Quit, self, self.request_quit)  # Ctrl+Q / Ctrl+Cmd+Q
         self.label_status = QLabel("初始化…")
         top.addWidget(self.btn_check)
@@ -112,8 +107,6 @@ class MainWindow(QMainWindow):
         top.addStretch(1)
         top.addWidget(self.label_status)
         top.addWidget(self.btn_hostip)
-        top.addWidget(self.btn_checkver)
-        top.addWidget(self.btn_quit)
         layout.addLayout(top)
 
         # 更新进度条 + 舞台指示器（阶段文字 + 旋转动画，长阶段不"死屏"）
@@ -244,7 +237,10 @@ class MainWindow(QMainWindow):
             sql_text = f"｜SQL同步: {mark}{sql.get('last_status')}"
         host_ip = status.get("host_ip")
         ip_text = f"｜IP: {host_ip}" if host_ip else ""
-        self.label_status.setText(f"{state_text}{ip_text}｜最近检查: {last or '-'}{sql_text}")
+        tz = status.get("timezone")
+        tz_text = f"｜时区: {tz}" if tz else ""
+        self.label_status.setText(
+            f"{state_text}{ip_text}{tz_text}｜最近检查: {last or '-'}{sql_text}")
         self.btn_check.setEnabled(not busy)
         self._update_update_button()
 

@@ -286,6 +286,22 @@ def test_host_ip_refresh(monkeypatch, tmp_path):
         assert client.get("/api/v1/status", headers=headers).json()["host_ip"] == "172.25.1.100"
 
 
+def test_status_exposes_timezone(monkeypatch, tmp_path):
+    """status 暴露部署 .env 的 TIMEZONE（UI 状态栏展示用）。"""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  xray-rest:\n    image: xray-rest\n", encoding="utf-8")
+    deploy_env = tmp_path / ".env"
+    deploy_env.write_text("TIMEZONE=Asia/Shanghai\nHOST_IP=10.0.0.5\n", encoding="utf-8")
+
+    app = create_app(make_cfg(compose_file=compose), checker=StubChecker(),
+                     token=TOKEN, enable_scheduler=False)
+    with TestClient(app) as client:
+        data = client.get("/api/v1/status",
+                          headers={"Authorization": f"Bearer {TOKEN}"}).json()
+        assert data["timezone"] == "Asia/Shanghai"
+        assert data["host_ip"] == "10.0.0.5"
+
+
 def test_host_ip_refresh_no_compose():
     app = create_app(make_cfg(), checker=StubChecker(), token=TOKEN,
                      enable_scheduler=False)

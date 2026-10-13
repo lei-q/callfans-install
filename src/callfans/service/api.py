@@ -244,6 +244,7 @@ def create_app(
             "error": state.error,
             "latest_release": state.latest_release,
             "host_ip": _deploy_host_ip(),
+            "timezone": _deploy_env_value("TIMEZONE"),
             "sqlsync": StateStore(state_file()).get("sqlsync"),
         }
 
@@ -361,6 +362,14 @@ def create_app(
         from pathlib import Path as _P
 
         return read_env(_P(cfg.compose_file).parent / ".env").get("HOST_IP")
+
+    def _deploy_env_value(key: str) -> str | None:
+        """部署 .env 中某键当前值（TIMEZONE 等，status 展示用）。"""
+        if not cfg.compose_file:
+            return None
+        from pathlib import Path as _P
+
+        return read_env(_P(cfg.compose_file).parent / ".env").get(key)
 
     def _refresh_host_ip_impl() -> dict:
         """探测宿主机 IP → 写部署 .env → 重建 xray-rest（其 environment 引用 HOST_IP）。"""

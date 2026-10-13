@@ -7,9 +7,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-_REQUIRED = ("HARBOR_API_URL", "HARBOR_PROJECT")
-
-# 账号类默认值（2026-09-21 决策：.env 可不填，代码兜底）
+# 默认值（.env 可不填，代码兜底；地址统一指向 47.87.66.98）
+_DEFAULT_HARBOR_API_URL = "http://47.87.66.98/"
+_DEFAULT_HARBOR_PROJECT = "callfans"
 _DEFAULT_HARBOR_USER = "admin"
 _DEFAULT_HARBOR_PASSWORD = "Callfans@123"
 _DEFAULT_MYSQL_HOST = "127.0.0.1"
@@ -56,17 +56,10 @@ class Config:
         env_path = Path(env_path)
         if env_path.exists():
             load_dotenv(env_path)
-        import os
 
-        missing = [k for k in _REQUIRED if not (os.environ.get(k) or "").strip()]
-        if missing:
-            raise ConfigError(
-                f"缺少配置项: {', '.join(missing)}（读取文件: {env_path.resolve()}，"
-                f"参考 .env.example）"
-            )
         cfg = cls(
-            harbor_api_url=_get("HARBOR_API_URL").rstrip("/"),
-            harbor_project=_get("HARBOR_PROJECT"),
+            harbor_api_url=_get("HARBOR_API_URL", _DEFAULT_HARBOR_API_URL).rstrip("/"),
+            harbor_project=_get("HARBOR_PROJECT", _DEFAULT_HARBOR_PROJECT),
             harbor_username=_get("HARBOR_USERNAME", _DEFAULT_HARBOR_USER),
             harbor_password=_get("HARBOR_PASSWORD", _DEFAULT_HARBOR_PASSWORD),
             check_interval_hours=float(_get("CHECK_INTERVAL_HOURS", "6")),

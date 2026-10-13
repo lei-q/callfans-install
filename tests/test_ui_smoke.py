@@ -224,7 +224,8 @@ def test_quit_button_exits_when_idle(qapp, monkeypatch):
             quit_calls.append(1)
 
     monkeypatch.setattr(mw, "QApplication", FakeQApp)
-    w.btn_quit.click()
+    # 检查新版/退出按钮已移至托盘菜单；退出走统一入口 request_quit
+    w.request_quit()
     assert quit_calls == [1]
 
 
