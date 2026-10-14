@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
     new_pending = Signal(int)  # 通知托盘弹气泡
     notify = Signal(str, str)  # (标题, 内容) 通用托盘通知（如 sqlsync 失败）
     log_line = Signal(str)     # 工作线程安全写日志（下载进度等）
+    busy_changed = Signal(bool)  # 检查/更新忙碌态变化（托盘菜单项跟随禁用）
 
     def __init__(self, poll_enabled: bool = True):
         super().__init__()
@@ -243,6 +244,7 @@ class MainWindow(QMainWindow):
             f"{state_text}{ip_text}{tz_text}｜最近检查: {last or '-'}{sql_text}")
         self.btn_check.setEnabled(not busy)
         self._update_update_button()
+        self.busy_changed.emit(busy)  # 托盘菜单"检查更新/立即更新"跟随禁用
 
         self._fill_table(pending)
 
@@ -558,12 +560,25 @@ class MainWindow(QMainWindow):
         self.btn_check.setEnabled(False)
         self.btn_update.setEnabled(False)
         self.log("开始检查…")
-        self._run(client.check, self._check_done, self._action_failed)
+        self._run(client.check, self._check_done, self._check_failed)
 
     def _check_done(self, plan: dict) -> None:
         self._busy = False
         count = len(plan.get("pending") or [])
         self.log(f"检查完成: {count} 项待更新")
+        self.refresh()
+
+    def _check_failed(self, error: str) -> None:
+        """检查失败兜底；409（更新进行中）是正常互斥，提示等待而非报错。
+
+        检查并发已在服务端合并，409 只剩更新竞态一种来源。
+        """
+        self._busy = False
+        self.progress.setVisible(False)
+        if "409" in error:
+            self.log("更新正在进行中，请等更新完成后再检查")
+        else:
+            self.log(f"操作失败: {error}")
         self.refresh()
 
     def on_update_clicked(self) -> None:

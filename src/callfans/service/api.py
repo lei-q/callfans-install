@@ -55,6 +55,7 @@ class CheckState:
     error: str | None = None
     latest_release: dict | None = None  # GitHub 最新版（自身更新提示）
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    inflight: object | None = field(default=None, repr=False, compare=False)  # 在跑的检查任务
 
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
@@ -108,10 +109,19 @@ def create_app(
             asyncio.run_coroutine_threadsafe(hub.broadcast({"event": event, "data": data}), main_loop)
 
     async def do_check() -> dict | None:
-        """串行执行检查；busy 或更新中返回 None（检查与更新互斥）。"""
-        if state.busy or state.updating:
+        """执行检查；并发调用合并到在跑的同一轮（等待并返回同一份结果，
+        2026-10-14 修复：此前第二路直接 409，UI 报"操作失败"）。
+        更新进行中返回 None（检查与更新互斥）。"""
+        if state.updating:
             return None
+        if state.inflight is not None and not state.inflight.done():
+            return await asyncio.shield(state.inflight)
+        # busy 在 create_task 前同步置位：任务尚未被调度时 update() 也能看到互斥
         state.busy = True
+        state.inflight = task = asyncio.create_task(_check_work())
+        return await asyncio.shield(task)
+
+    async def _check_work() -> dict:
         try:
             plan = await anyio.to_thread.run_sync(checker.run)
             # sqlsync 漂移并入检查结果（只读 plan，2026-09-21 补：此前检查按钮
@@ -147,6 +157,7 @@ def create_app(
             raise
         finally:
             state.busy = False
+            state.inflight = None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -250,16 +261,14 @@ def create_app(
 
     @app.post("/api/v1/check")
     async def check() -> dict:
-        if state.busy:
-            raise HTTPException(status_code=409, detail="check in progress")
+        if state.updating:
+            raise HTTPException(status_code=409, detail="update in progress")
         try:
             payload = await do_check()
-        except HTTPException:
-            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
-        if payload is None:
-            raise HTTPException(status_code=409, detail="check in progress")
+        if payload is None:  # do_check 只在更新中返回 None（极小竞态窗口）
+            raise HTTPException(status_code=409, detail="update in progress")
         return payload
 
     @app.get("/api/v1/pending")

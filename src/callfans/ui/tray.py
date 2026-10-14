@@ -77,8 +77,8 @@ class TrayController:
         self.menu = QMenu()
         menu = self.menu
         act_show = QAction("打开主窗口", menu)  # parent 归 menu 所有，防 GC
-        act_check = QAction("检查更新", menu)  # parent 归 menu 所有，防 GC
-        act_update = QAction("立即更新", menu)  # parent 归 menu 所有，防 GC
+        self.act_check = act_check = QAction("检查更新", menu)
+        self.act_update = act_update = QAction("立即更新", menu)
         act_checkver = QAction("检查新版本…", menu)  # parent 归 menu 所有，防 GC
         act_quit = QAction("退出", menu)  # parent 归 menu 所有，防 GC
         act_show.triggered.connect(self._show_window)
@@ -97,9 +97,16 @@ class TrayController:
         self.icon.setContextMenu(menu)
         self.icon.activated.connect(self._on_activated)
         self.icon.show()
+        # 检查/更新进行中禁用相应菜单项（对齐主窗口按钮；v0.7.x 实测：检查中
+        # 从托盘再点一次撞 409 被当"操作失败"砸给用户）
+        window.busy_changed.connect(self.set_busy)
         window.new_pending.connect(self._notify_new_pending)
         window.notify.connect(lambda title, msg: self.icon.showMessage(
             title, msg, QSystemTrayIcon.MessageIcon.Warning))
+
+    def set_busy(self, busy: bool) -> None:
+        self.act_check.setEnabled(not busy)
+        self.act_update.setEnabled(not busy)
 
     def _show_window(self) -> None:
         self.window.showNormal()

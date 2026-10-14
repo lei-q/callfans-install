@@ -1,5 +1,9 @@
 """service/api.py：token 鉴权与核心端点（stub checker，无外部依赖）。"""
 
+import asyncio
+import time
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -309,3 +313,69 @@ def test_host_ip_refresh_no_compose():
         resp = client.post("/api/v1/host-ip/refresh",
                            headers={"Authorization": f"Bearer {TOKEN}"})
         assert resp.status_code == 400
+
+
+# ---------- 并发/互斥（2026-10-14：409 check in progress 修复）----------
+
+
+def test_concurrent_check_merged_single_run():
+    """并发触发两次检查 → 合并为同一轮：两路都 200、同一份结果、checker 只跑一次。
+
+    原 bug：第二路收到 409 "check in progress"，UI 报"操作失败"。
+    ASGITransport + gather：单事件循环并发（与生产单 uvicorn 循环一致）。
+    """
+
+    class SlowChecker(StubChecker):
+        def run(self):
+            time.sleep(0.5)
+            self.calls += 1
+            return self.plan
+
+    stub = SlowChecker()
+    app = create_app(make_cfg(), checker=stub, token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=None)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            first, second = await asyncio.gather(
+                ac.post("/api/v1/check", headers=headers),
+                ac.post("/api/v1/check", headers=headers),
+            )
+            return first, second
+
+    first, second = asyncio.run(scenario())
+
+    assert first.status_code == 200
+    assert second.status_code == 200  # 不再 409
+    assert first.json() == second.json()
+    assert stub.calls == 1
+
+
+def test_check_during_update_returns_409_update_in_progress():
+    """更新进行中触发检查 → 409，detail 明确说 update in progress（不再误导为 check）。"""
+
+    class SlowChecker(StubChecker):
+        def run(self):
+            time.sleep(0.5)
+            return UpdatePlan(checked_at="t", pending=[])  # 空计划：更新链路速回
+
+    stub = SlowChecker()
+    app = create_app(make_cfg(), checker=stub, token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=None)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            upd = asyncio.create_task(ac.post("/api/v1/update", headers=headers))
+            await asyncio.sleep(0.15)  # 等更新进入 checker.run
+            chk = await ac.post("/api/v1/check", headers=headers)
+            return await upd, chk
+
+    upd, chk = asyncio.run(scenario())
+
+    assert upd.status_code == 200
+    assert chk.status_code == 409
+    assert chk.json()["detail"] == "update in progress"

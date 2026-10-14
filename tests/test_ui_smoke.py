@@ -274,3 +274,37 @@ def test_tray_controller_keeps_menu_reference(qapp):
     for expect in ("打开主窗口", "检查更新", "立即更新", "退出"):
         assert expect in actions
     assert tray.icon.contextMenu() is not None
+
+
+def test_tray_menu_actions_follow_busy_state(qapp):
+    """检查/更新进行中 → 托盘菜单"检查更新/立即更新"禁用（对齐主窗口按钮行为）。
+
+    2026-10-14 实例：托盘菜单不受 busy 约束，检查进行中再点一次 → 409 →
+    UI 报"操作失败: ServiceUnavailable"。"""
+    from callfans.ui.main_window import MainWindow
+    from callfans.ui.tray import TrayController
+
+    w = MainWindow(poll_enabled=False)
+    tray = TrayController(w)
+    assert tray.act_check.isEnabled()
+    assert tray.act_update.isEnabled()
+
+    w.busy_changed.emit(True)
+    assert not tray.act_check.isEnabled()
+    assert not tray.act_update.isEnabled()
+
+    w.busy_changed.emit(False)
+    assert tray.act_check.isEnabled()
+    assert tray.act_update.isEnabled()
+
+
+def test_check_failed_409_logged_as_hint_not_error(qapp):
+    """检查撞上 409（更新进行中）→ 提示等待而非"操作失败"。"""
+    w = MainWindow(poll_enabled=False)
+    w._check_failed("ServiceUnavailable: /api/v1/check -> 409: update in progress")
+    log_text = w.log_view.toPlainText()
+    assert "操作失败" not in log_text
+    assert "更新正在进行中" in log_text
+    # 非 409 的失败仍走"操作失败"
+    w._check_failed("ServiceUnavailable: 服务不可达")
+    assert "操作失败" in w.log_view.toPlainText()
