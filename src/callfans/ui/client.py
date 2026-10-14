@@ -103,3 +103,30 @@ def update(items: list[str] | None = None) -> dict:
         raise ServiceUnavailable(f"/api/v1/update 请求失败: {e}") from e
     finally:
         client.close()
+
+
+def pull_decision(action: str) -> dict:
+    """pull 超时确认的决策（continue/abort）；返回后端回执（异步由 WS 事件收尾）。"""
+    import json as _json
+
+    body = _json.dumps({"action": action}).encode()
+    try:
+        client = _connect(timeout=5.0)
+    except ServiceUnavailable:
+        raise
+    try:
+        resp = client.post("/api/v1/pull/decision", content=body,
+                           headers={"Content-Type": "application/json"}, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            detail = e.response.json().get("detail", "")
+        except Exception:
+            pass
+        raise ServiceUnavailable(f"/api/v1/pull/decision -> {e.response.status_code}: {detail}") from e
+    except httpx.HTTPError as e:
+        raise ServiceUnavailable(f"/api/v1/pull/decision 请求失败: {e}") from e
+    finally:
+        client.close()

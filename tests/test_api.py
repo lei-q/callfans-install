@@ -1,6 +1,7 @@
 """service/api.py：token 鉴权与核心端点（stub checker，无外部依赖）。"""
 
 import asyncio
+import threading
 import time
 
 import httpx
@@ -379,3 +380,38 @@ def test_check_during_update_returns_409_update_in_progress():
     assert upd.status_code == 200
     assert chk.status_code == 409
     assert chk.json()["detail"] == "update in progress"
+
+
+# ---------- pull 超时确认决策（2026-10-14）----------
+
+
+def test_pull_decision_endpoint_writes_guard():
+    app = create_app(make_cfg(), checker=StubChecker(), token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=None)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    guard = app.state.pull_guard
+    result: list[str] = []
+
+    def wait():
+        result.append(guard.request_decision(grace=5.0))
+
+    t = threading.Thread(target=wait)
+    t.start()
+    time.sleep(0.05)  # 等 request_decision 进入阻塞
+    with TestClient(app) as c:
+        resp = c.post("/api/v1/pull/decision", json={"action": "abort"}, headers=headers)
+    t.join(timeout=2)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "action": "abort"}
+    assert result == ["abort"]  # 决策唤醒阻塞的 worker 线程
+
+
+def test_pull_decision_rejects_bad_action():
+    app = create_app(make_cfg(), checker=StubChecker(), token=TOKEN,
+                     enable_scheduler=False, sqlsync_cfg=None)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    with TestClient(app) as c:
+        assert c.post("/api/v1/pull/decision", json={"action": "kill"},
+                      headers=headers).status_code == 400
+        assert c.post("/api/v1/pull/decision", headers=headers).status_code == 400

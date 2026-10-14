@@ -36,7 +36,7 @@ from ..core.sync.runtime import SqlSyncRuntime
 from ..core.host_ip import detect_host_ip
 from ..core.selfupdate import fetch_latest, is_newer
 from ..core.updaters.compose_env import read_env, write_env
-from ..core.updaters.docker_cli import DockerCLI
+from ..core.updaters.docker_cli import DockerCLI, PullGuard
 from ..core.updaters.runner import UpdateRunner
 from ..paths import log_file, runtime_file, state_file
 from .hub import EventHub
@@ -93,6 +93,7 @@ def create_app(
     token = token or secrets.token_urlsafe(32)
     hub = EventHub()
     state = CheckState()
+    pull_guard = PullGuard(cfg.docker_pull_confirm_seconds)  # pull 继续/中断决策闸门
     main_loop: asyncio.AbstractEventLoop | None = None
 
     # sqlsync 可选域：未配置 CLOUD_DB_* 时整体停用（不影响制品更新）
@@ -241,6 +242,7 @@ def create_app(
     # 供测试与诊断读取
     app.state.token = token
     app.state.hub = hub
+    app.state.pull_guard = pull_guard
 
     @app.get("/api/v1/status")
     async def status() -> dict:
@@ -296,6 +298,15 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(e)) from e
         finally:
             state.updating = False
+
+    @app.post("/api/v1/pull/decision")
+    async def pull_decision(payload: dict | None = Body(default=None)) -> dict:
+        """pull 超时确认的决策入口（UI 弹框「继续/中断」回调）。"""
+        action = (payload or {}).get("action")
+        if action not in ("continue", "abort"):
+            raise HTTPException(status_code=400, detail="action 须为 continue 或 abort")
+        pull_guard.decide(action)
+        return {"ok": True, "action": action}
 
     def _sqlsync_drift_item():
         """只读评估数据库漂移；无差异返回 None，有则返回待更新伪条目（含变更 SQL）。"""
@@ -356,7 +367,8 @@ def create_app(
         plan = checker.run()
         if selected is not None:
             plan.pending = [p for p in plan.pending if p.name in selected]
-        runner = UpdateRunner(cfg, state=getattr(checker, "state", None), on_event=emit)
+        runner = UpdateRunner(cfg, state=getattr(checker, "state", None), on_event=emit,
+                              guard=pull_guard)
         report = runner.run(plan)
         for key in summary:
             summary[key] += report["summary"].get(key, 0)

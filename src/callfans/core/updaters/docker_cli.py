@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 
 from ..procs import NO_WINDOW
@@ -23,6 +24,35 @@ _VAR_WARNING_RE = re.compile(r'The \\"(\w+)\\" variable is not set')  # docker l
 
 class DockerError(RuntimeError):
     pass
+
+
+class PullGuard:
+    """docker pull 的"继续/中断"决策闸门（跨线程：worker ↔ API）。
+
+    worker 线程在 _stream 循环里 request_decision() 阻塞等待；服务 API 线程
+    decide(action) 写入决策并唤醒。每次 request 前清空旧决策，避免上一条目
+    的残留点击误判到当前条目。
+    """
+
+    def __init__(self, confirm_seconds: float):
+        self.confirm_seconds = confirm_seconds
+        self._evt = threading.Event()
+        self._action: str | None = None
+        self._lock = threading.Lock()
+
+    def decide(self, action: str) -> None:
+        with self._lock:
+            self._action = action
+        self._evt.set()
+
+    def request_decision(self, grace: float) -> str:
+        """阻塞等待决策；超时/未决策按 'continue' 返回（不阻断管线，硬上限兜底）。"""
+        with self._lock:
+            self._action = None
+        self._evt.clear()
+        self._evt.wait(timeout=max(1.0, grace))
+        with self._lock:
+            return self._action or "continue"
 
 
 class DockerCLI:
@@ -116,10 +146,13 @@ class DockerCLI:
         except json.JSONDecodeError:  # 旧版本逐行输出
             return [json.loads(line) for line in out.splitlines() if line.strip()]
 
-    def _stream(self, args: list[str], on_line=None, timeout: int = 1800) -> str:
+    def _stream(self, args: list[str], on_line=None, timeout: int = 1800,
+                guard: PullGuard | None = None, on_confirm=None) -> str:
         """流式执行 docker 命令：逐行回调（进度日志），结束后返回全部输出。
 
         供 pull / compose up 等长命令实时反馈用；行解码容错（utf-8 → 替换）。
+        guard 非空且超过 confirm_seconds 时，回调 on_confirm 并阻塞等待
+        继续/中断决策（中断 → kill + 抛 DockerError，由上层回滚）。
         """
         cmd = ["docker", *args]
         env = {k: v for k, v in os.environ.items() if k not in self.env_exclusions}
@@ -131,7 +164,9 @@ class DockerCLI:
         except FileNotFoundError as e:
             raise DockerError("未找到 docker 命令") from e
         lines: list[str] = []
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        asked = False
+        deadline = started + timeout
         try:
             while True:
                 raw = proc.stdout.readline()
@@ -141,6 +176,15 @@ class DockerCLI:
                 lines.append(line)
                 if on_line and line.strip():
                     on_line(line)
+                elapsed = time.monotonic() - started
+                if guard is not None and not asked and elapsed >= guard.confirm_seconds:
+                    asked = True
+                    if on_confirm is not None:
+                        on_confirm(int(elapsed))
+                    decision = guard.request_decision(grace=deadline - time.monotonic())
+                    if decision == "abort":
+                        proc.kill()
+                        raise DockerError("拉取被用户中断")
                 if time.monotonic() > deadline:
                     proc.kill()
                     raise DockerError(f"docker {' '.join(args[:3])} 超时（>{timeout}s）")
@@ -221,9 +265,14 @@ class DockerCLI:
     def rmi(self, ref: str) -> None:
         self._run(["rmi", ref], timeout=120)
 
-    def pull(self, ref: str, on_line=None) -> str:
-        """拉取镜像；on_line 实时回传 docker pull 的进度行（层下载/完成等）。"""
-        return self._stream(["pull", ref], on_line=on_line, timeout=1800)
+    def pull(self, ref: str, on_line=None, timeout: int = 1800,
+             guard: PullGuard | None = None, on_confirm=None) -> str:
+        """拉取镜像；on_line 实时回传 docker pull 的进度行（层下载/完成等）。
+
+        guard 非空时，超过 confirm_seconds 弹确认（继续/中断），中断抛 DockerError。
+        """
+        return self._stream(["pull", ref], on_line=on_line, timeout=timeout,
+                            guard=guard, on_confirm=on_confirm)
 
     def logs(self, name: str, tail: int = 30) -> str:
         proc = self._raw(["logs", "--tail", str(tail), name])

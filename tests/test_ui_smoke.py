@@ -308,3 +308,85 @@ def test_check_failed_409_logged_as_hint_not_error(qapp):
     # 非 409 的失败仍走"操作失败"
     w._check_failed("ServiceUnavailable: 服务不可达")
     assert "操作失败" in w.log_view.toPlainText()
+
+
+def test_pull_confirm_dialog_sends_decision(qapp, monkeypatch):
+    """pull_confirm 事件 → 弹框；选「中断并回滚」→ 调 client.pull_decision('abort')。"""
+    import callfans.ui.main_window as mw
+
+    w = mw.MainWindow(poll_enabled=False)
+    sent: list[str] = []
+    monkeypatch.setattr(mw.client, "pull_decision", lambda a: sent.append(a) or {})
+    # _run 改为同步执行，避免线程竞态
+    monkeypatch.setattr(w, "_run", lambda fn, *a, **k: fn())
+
+    from types import SimpleNamespace
+
+    class FakeBox:
+        Icon = SimpleNamespace(Question=4)
+        ButtonRole = SimpleNamespace(AcceptRole=0, DestructiveRole=2)
+
+        def __init__(self, *a, **k):
+            self._buttons = []
+
+        def setIcon(self, *a): pass
+        def setWindowTitle(self, *a): pass
+        def setText(self, *a): pass
+        def setDefaultButton(self, *a): pass
+
+        def addButton(self, text, role):
+            b = object()
+            self._buttons.append((text, b))
+            return b
+
+        def exec(self): pass
+
+        def clickedButton(self):
+            # 返回「中断并回滚」按钮（第二个）
+            return self._buttons[1][1]
+
+    monkeypatch.setattr(mw, "QMessageBox", FakeBox)
+
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/callfans-rpa", "stage": "pull_confirm", "elapsed": 700}})
+    assert sent == ["abort"]
+
+
+def test_pull_confirm_continue_sends_continue(qapp, monkeypatch):
+    """选「继续等待」→ client.pull_decision('continue')。"""
+    import callfans.ui.main_window as mw
+
+    w = mw.MainWindow(poll_enabled=False)
+    sent: list[str] = []
+    monkeypatch.setattr(mw.client, "pull_decision", lambda a: sent.append(a) or {})
+    monkeypatch.setattr(w, "_run", lambda fn, *a, **k: fn())
+
+    from types import SimpleNamespace
+
+    class FakeBox:
+        Icon = SimpleNamespace(Question=4)
+        ButtonRole = SimpleNamespace(AcceptRole=0, DestructiveRole=2)
+
+        def __init__(self, *a, **k):
+            self._buttons = []
+
+        def setIcon(self, *a): pass
+        def setWindowTitle(self, *a): pass
+        def setText(self, *a): pass
+        def setDefaultButton(self, *a): pass
+
+        def addButton(self, text, role):
+            b = object()
+            self._buttons.append((text, b))
+            return b
+
+        def exec(self): pass
+
+        def clickedButton(self):
+            return self._buttons[0][1]  # 「继续等待」
+
+    monkeypatch.setattr(mw, "QMessageBox", FakeBox)
+
+    w._on_event({"event": "update_progress",
+                 "data": {"item": "callfans/callfans-rpa", "stage": "pull_confirm", "elapsed": 700}})
+    assert sent == ["continue"]

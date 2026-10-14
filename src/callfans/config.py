@@ -67,6 +67,8 @@ class Config:
     mysql_database: str | None = None
     health_wait_seconds: int = 60
     docker_stop_timeout: int = 15
+    docker_pull_confirm_seconds: int = 600   # 单个镜像 pull 超过该时长弹"继续/中断"确认
+    docker_pull_timeout_seconds: int = 3600  # 单个镜像 pull 硬上限（2GB 镜像实测 >30min）
     bind_port: int | None = None
 
     @classmethod
@@ -93,6 +95,8 @@ class Config:
             mysql_database=_get("MYSQL_DATABASE"),
             health_wait_seconds=int(_get("HEALTH_WAIT_SECONDS", "60")),
             docker_stop_timeout=int(_get("DOCKER_STOP_TIMEOUT", "15")),
+            docker_pull_confirm_seconds=int(_get("DOCKER_PULL_CONFIRM_SECONDS", "600")),
+            docker_pull_timeout_seconds=int(_get("DOCKER_PULL_TIMEOUT_SECONDS", "3600")),
             bind_port=int(p) if (p := _get("BIND_PORT")) else None,
         )
         if cfg.check_interval_hours <= 0:

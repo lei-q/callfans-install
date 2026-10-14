@@ -108,7 +108,7 @@ class FakeDocker:
         self.actions.append(f"rmi:{ref}")
         self.images = {r: i for r, i in self.images.items() if i != ref and r != ref}
 
-    def pull(self, ref, on_line=None):
+    def pull(self, ref, on_line=None, timeout=1800, guard=None, on_confirm=None):
         self.actions.append(f"pull:{ref}")
         self._n += 1
         self.images[ref] = f"img-{self._n}"
@@ -412,7 +412,7 @@ def test_base_first_install_pull_and_up(tmp_path):
                                               "image_id": self.images["mysql:8.0.24"],
                                               "running": True}
 
-        def pull(self, ref, on_line=None):
+        def pull(self, ref, on_line=None, timeout=1800, guard=None, on_confirm=None):
             self.actions.append(f"pull:{ref}")
             self._n += 1
             self.images[ref] = f"img-{self._n}"

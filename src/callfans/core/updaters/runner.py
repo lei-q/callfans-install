@@ -28,7 +28,7 @@ TYPE_ORDER = {TYPE_BASE: 0, TYPE_SERVER: 1, TYPE_FRONTEND: 2}
 class UpdateRunner:
     def __init__(self, cfg: Config, state=None, docker=None, puller=None,
                  on_event=None, updaters: dict | None = None,
-                 history_path=None, run_preflight: bool = True):
+                 history_path=None, run_preflight: bool = True, guard=None):
         from .docker_cli import DockerCLI
 
         self.cfg = cfg
@@ -39,12 +39,14 @@ class UpdateRunner:
         self._updaters = updaters  # 测试注入 {type: 实例}
         self.history_path = history_path or history_file()
         self.run_preflight = run_preflight
+        self.guard = guard  # docker pull 继续/中断决策闸门（可空）
 
     def _updater_for(self, type_: str):
         if self._updaters is not None:
             return self._updaters[type_]
         if type_ in (TYPE_SERVER, TYPE_BASE):  # base 复用同一执行器（无 tag 注入模式）
-            return ServerUpdater(self.cfg, self.state, self.docker, self.on_event)
+            return ServerUpdater(self.cfg, self.state, self.docker, self.on_event,
+                                 pull_guard=self.guard)
         if type_ == TYPE_FRONTEND:
             return FrontendUpdater(self.cfg, self.state, self.puller, self.on_event)
         raise ValueError(f"未知制品类型: {type_}")

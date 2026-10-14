@@ -21,7 +21,7 @@ from .compose_env import (
     extract_tag_var, find_image_template, has_unresolved_vars, iter_image_templates,
     read_env, read_text_loose, render_ref, strip_tag, strip_vars, write_env,
 )
-from .docker_cli import DockerCLI, DockerError
+from .docker_cli import DockerCLI, DockerError, PullGuard
 
 log = logging.getLogger(__name__)
 
@@ -88,11 +88,13 @@ def backfill_tag_vars(cfg: Config) -> list[str]:
 
 class ServerUpdater:
     def __init__(self, cfg: Config, state: StateStore | None = None,
-                 docker: DockerCLI | None = None, on_event=None):
+                 docker: DockerCLI | None = None, on_event=None,
+                 pull_guard: PullGuard | None = None):
         self.cfg = cfg
         self.state = state
         self.docker = docker or DockerCLI()
         self.on_event = on_event or (lambda *a, **k: None)
+        self.pull_guard = pull_guard
 
     def update(self, item: PendingItem) -> dict:
         """server：版本 tag 注入 ${VAR}；base：第三方镜像按 compose 原文拉取（无注入）。"""
@@ -178,7 +180,13 @@ class ServerUpdater:
                         "stage": "pull_progress", "line": line[:200],
                     })
 
-            self.docker.pull(new_ref, on_line=on_pull_line)
+            self.docker.pull(
+                new_ref, on_line=on_pull_line,
+                timeout=self.cfg.docker_pull_timeout_seconds,
+                guard=self.pull_guard,
+                on_confirm=lambda elapsed, _item=item: self._emit(
+                    _item, "pull_confirm", elapsed=elapsed),
+            )
             new_image_id = self.docker.inspect_image(new_ref).get("Id")
 
             if var:

@@ -626,6 +626,41 @@ class MainWindow(QMainWindow):
         不按失败处理，等事件收尾。"""
         self.log("⚠ 更新请求连接中断——服务仍在后台执行，结果稍后自动送达…")
 
+    # ---------- pull 超时确认（继续/中断） ----------
+
+    def _ask_pull_confirm(self, item: str, elapsed: int) -> None:
+        """镜像拉取超过确认阈值 → 弹模态框：继续等待 / 中断并回滚。
+
+        模态框在嵌套事件循环中运行，期间 WS 事件（done/update_done）仍能进来，
+        由 _close_pull_confirm 关闭本框（此时不发送决策，服务端已自行收尾）。
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("拉取耗时较长")
+        box.setText(
+            f"镜像 {item} 拉取已耗时 {elapsed // 60} 分钟仍未完成。\n\n"
+            "「继续等待」：继续拉取直到完成或达到超时上限；\n"
+            "「中断并回滚」：终止本次拉取并回滚到旧版本。"
+        )
+        btn_cont = box.addButton("继续等待", QMessageBox.ButtonRole.AcceptRole)
+        btn_abort = box.addButton("中断并回滚", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(btn_cont)
+        self._pull_confirm_box = box
+        box.exec()
+        self._pull_confirm_box = None
+        clicked = box.clickedButton()
+        if clicked is None:  # 被 update_done/done 自动关闭（拉取已结束），不发决策
+            return
+        action = "continue" if clicked is btn_cont else "abort"
+        self.log(f"{'继续等待' if action == 'continue' else '已请求中断并回滚'}：{item}")
+        self._run(lambda: client.pull_decision(action))
+
+    def _close_pull_confirm(self) -> None:
+        box = getattr(self, "_pull_confirm_box", None)
+        if box is not None:
+            self._pull_confirm_box = None
+            box.close()
+
     # ---------- 服务 WS 事件（实时进度） ----------
 
     # ---------- 舞台指示器 ----------
@@ -672,10 +707,13 @@ class MainWindow(QMainWindow):
                 self.log(f"▶ [{data.get('type', '')}] {item}")
             elif stage == "done":
                 self._set_stage(None)
+                self._close_pull_confirm()
                 rec = data.get("record") or {}
                 self.log(f"■ {item} → {rec.get('result')}"
                          + (f"（{rec.get('error')}）" if rec.get("error") else ""))
                 self.progress.setValue(self.progress.value() + 1)
+            elif stage == "pull_confirm":
+                self._ask_pull_confirm(item, int(data.get("elapsed") or 0))
             elif stage in ("pull_progress", "up_progress"):
                 line = str(data.get("line", "")).strip()
                 if line:
@@ -702,6 +740,7 @@ class MainWindow(QMainWindow):
                         self.log(f"   · {item}: {stage} {extras}".rstrip())
         elif event == "update_done":
             self._set_stage(None)
+            self._close_pull_confirm()
             self.progress.setValue(self.progress.maximum())
             if getattr(self, "_awaiting_update_result", False):
                 self._awaiting_update_result = False
