@@ -95,11 +95,16 @@ class HarborClient:
         return repos
 
     def repo_tags(self, repo_full: str) -> list[ArtifactTag]:
-        """列出 repo 全部 artifact 的 tag（带 push_time 与 manifest annotations）。"""
+        """列出 repo 全部 artifact 的 tag（带 push_time 与 manifest annotations）。
+
+        仓库名含 '/' 时需双重编码：Harbor 前置 nginx 会先解码一次，单次编码的
+        %2F 被还原成 '/' 后 route 不匹配 → 404（2026-10-14 实测，首例
+        callfans/xuxueli/xxl-job-admin）。
+        """
         short = repo_full.split("/", 1)[1]
         path = (
             f"/api/v2.0/projects/{quote(self.project, safe='')}"
-            f"/repositories/{quote(short, safe='')}/artifacts"
+            f"/repositories/{quote(quote(short, safe=''), safe='')}/artifacts"
         )
         tags: list[ArtifactTag] = []
         for art in self._paginated(path, extra_params={"with_tag": "true"}):

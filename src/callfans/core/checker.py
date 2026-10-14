@@ -90,7 +90,12 @@ class Checker:
         harbor_managed = {ci.harbor_repo for ci in compose_images if ci.is_harbor}
 
         for repo in self.harbor.list_repos():
-            tags = [t for t in self.harbor.repo_tags(repo) if is_version_tag(t.tag, exclude)]
+            # 单仓库 tag 获取失败（如已删除/编码 404）跳过继续，不炸整轮检查
+            try:
+                tags = [t for t in self.harbor.repo_tags(repo) if is_version_tag(t.tag, exclude)]
+            except Exception as e:
+                log.warning("仓库 %s tag 获取失败，跳过: %s", repo, e)
+                continue
             if not tags:
                 continue
             declared = next(

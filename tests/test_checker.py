@@ -284,3 +284,29 @@ def test_no_compose_keeps_old_behavior(tmp_path):
     plan = run_checker(harbor, docker_rows=[], state=StateStore(tmp_path / "s.json"),
                        cfg=make_cfg())
     assert "callfans/api" in {p.name for p in plan.pending}
+
+
+def test_single_repo_tag_failure_skipped_not_fatal(tmp_path):
+    """单个仓库 tag 获取失败（如 Harbor 404）→ 跳过该仓库并继续，不炸整轮检查。
+
+    2026-10-14 实例：xuxueli/xxl-job-admin 路径编码 404 曾让整次检查 500。
+    """
+    from callfans.core.harbor import HarborError
+
+    class FlakyHarbor(FakeHarbor):
+        def repo_tags(self, repo):
+            if repo == "callfans/broken-repo":
+                raise HarborError("GET /api/v2.0/... -> 404: not found")
+            return super().repo_tags(repo)
+
+    harbor = FlakyHarbor(repos={
+        "callfans/api": [
+            mk("callfans/api", "20260912132921-123a066", "2026-09-12T13:29:21Z"),
+        ],
+        "callfans/broken-repo": [],  # 这个仓库会抛错
+    })
+    plan = run_checker(harbor, docker_rows=[], state=StateStore(tmp_path / "s.json"),
+                       cfg=make_cfg())
+    names = {p.name for p in plan.pending}
+    assert "callfans/api" in names          # 好仓库照常产出
+    assert "callfans/broken-repo" not in names
