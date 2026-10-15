@@ -447,3 +447,58 @@ def test_base_not_in_compose_fails_clearly(tmp_path):
     record = ServerUpdater(cfg, None, fake).update(_base_item(repo="postgres", tag="16"))
     assert record["result"] == "failed"
     assert "未找到镜像 postgres" in record["error"]
+
+
+def test_match_base_service_prefixed_harbor():
+    """harbor 前缀 base：能按归一化 repo 匹配到服务（2026-10-15 首装失败根因）。"""
+    cfg = make_cfg()
+    up = ServerUpdater(cfg, None, None)
+    cfg_json = {"services": {
+        "callfans-db": {"image": "47.87.66.98/callfans/mysql:8.0.24"},
+    }}
+    assert up._match_base_service(cfg_json, "/callfans/mysql") == "callfans-db"
+    # 第三方裸名仍然能匹配
+    assert up._match_base_service({"services": {"db": {"image": "mysql:8.0.24"}}}, "mysql") == "db"
+
+
+def test_base_prefixed_harbor_first_install(tmp_path):
+    """harbor 前缀 base 首装：匹配服务 + 解析 registry 后 pull 成功（2026-10-15）。"""
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "services:\n"
+        "  callfans-db:\n    image: ${HARBOR_REGISTRY}/callfans/mysql:8.0.24\n"
+        "    container_name: callfans-db\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("HARBOR_REGISTRY=47.87.66.98\n", encoding="utf-8")
+    RESOLVED = "47.87.66.98/callfans/mysql:8.0.24"
+
+    class _PrefixedBaseFake(FakeDocker):
+        def compose_config(self, f):
+            return {"services": {"callfans-db": {"image": RESOLVED,
+                                                 "container_name": "callfans-db"}}}
+
+        def _rendered(self, service):
+            return RESOLVED
+
+        def compose_up(self, f, service, force_recreate=False, on_line=None):
+            self.actions.append(f"up:{service}")
+            self._ups += 1
+            self.containers["callfans-db"] = {"service": service,
+                                              "image_id": self.images[RESOLVED],
+                                              "running": True}
+
+        def compose_ps(self, f):
+            return [{"Name": n, "Service": c["service"]} for n, c in self.containers.items()]
+
+    fake = _PrefixedBaseFake(compose_file, {})
+    cfg = make_cfg(compose_file=compose_file, health_wait_seconds=2)
+    item = PendingItem(name="/callfans/mysql", type="base", old=None, new="8.0.24",
+                       alias="callfans-db", changelog="镜像未安装")
+
+    record = ServerUpdater(cfg, None, fake).update(item)
+
+    assert record["result"] == "success", record["error"]
+    joined = " ".join(fake.actions)
+    assert f"pull:{RESOLVED}" in joined
+    assert "up:callfans-db" in joined

@@ -249,8 +249,18 @@ class ServerUpdater:
         return None
 
     def _match_base_service(self, cfg_json: dict, repo: str) -> str | None:
+        """按镜像 repo 匹配 compose 服务名。
+
+        repo 可能是第三方裸名（mysql）或 harbor 前缀名（/callfans/mysql，${HARBOR_REGISTRY}
+        剥离后带前导斜杠）；compose config 里 image 已解析为 host/callfans/mysql。
+        两侧归一化到 harbor repo 全名（非 harbor 则去前导斜杠的裸 repo）再比。
+        """
+        def _norm(r: str) -> str:
+            return harbor_repo_of(r, self.cfg.harbor_project) or r.lstrip("/")
+
+        target = _norm(repo)
         for svc, scfg in (cfg_json.get("services") or {}).items():
-            if strip_tag(scfg.get("image") or "") == repo:
+            if _norm(strip_tag(scfg.get("image") or "")) == target:
                 return svc
         return None
 

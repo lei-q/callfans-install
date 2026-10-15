@@ -47,6 +47,18 @@ class TestTemplate:
         assert t is not None
         assert extract_tag_var(t) is None
 
+    def test_extract_tag_var_prefixed_fixed_tag(self):
+        """harbor 前缀 + 固定 tag：tag 变量是 None，不误取 ${HARBOR_REGISTRY}（2026-10-15）。"""
+        assert extract_tag_var("${HARBOR_REGISTRY}/callfans/mysql:8.0.24") is None
+        assert extract_tag_var("${HARBOR_REGISTRY}/callfans/xray-rest") is None  # 无 tag
+        assert extract_tag_var("${HARBOR_REGISTRY}/callfans/api:${API_TAG}") == "API_TAG"
+
+    def test_render_prefixed_fixed_tag_keeps_tag(self):
+        """base 固定 tag：只解析 ${HARBOR_REGISTRY}，不把 tag 换成 registry 值。"""
+        ref = render_ref("${HARBOR_REGISTRY}/callfans/mysql:8.0.24", "8.0.24",
+                         env={"HARBOR_REGISTRY": "47.87.66.98"})
+        assert ref == "47.87.66.98/callfans/mysql:8.0.24"
+
     def test_not_found(self):
         assert find_image_template(COMPOSE, "callfans/other", "callfans") is None
 

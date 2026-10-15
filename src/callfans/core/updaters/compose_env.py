@@ -57,9 +57,18 @@ def find_image_template(text: str, repo_full: str, project: str) -> str | None:
 
 
 def extract_tag_var(template: str) -> str | None:
-    """模板里最后一个变量即 tag 变量（如 harbor/callfans/api:${API_TAG}）。"""
-    vars_ = _VAR_RE.findall(template)
-    return vars_[-1] if vars_ else None
+    """模板里 tag 位置的变量名（如 harbor/callfans/api:${API_TAG}）。
+
+    只看最后一个 ':' 之后的 tag 段：是 ${VAR} 才返回变量名；固定 tag
+    （如 mysql:8.0.24）或无 tag 则返回 None。此前取"最后一个变量"会把
+    ${HARBOR_REGISTRY}/callfans/mysql:8.0.24 里的 HARBOR_REGISTRY 误当 tag 变量
+    （2026-10-15 首装失败根因）。
+    """
+    _, sep, tail = template.rpartition(":")
+    if not sep:
+        return None  # 无 tag 部分
+    m = _VAR_RE.search(tail)
+    return m.group(1) if m else None
 
 
 def iter_image_templates(text: str) -> list[str]:
