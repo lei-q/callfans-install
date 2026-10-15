@@ -1,8 +1,12 @@
-"""检查编排：Harbor ↔ 本地 对比，产出 UpdatePlan（§5 检查流程）。
+"""检查编排：以 compose 清单为部署真值，统一「存在性 →（版本 tag 则）时间比对」。
 
-- 类型路由（Q3）：annotation 有 com.callfans.type=frontend/sql 走 state 记账对比；
-  其余默认 server，对领先候选拉 config Labels 确认类型并读 changelog（Q4）
-- docker 不可用时跳过 server 类（避免把"查不到"当成"全都有新版"），frontend/sql 照常
+- 统一规则（2026-10-15）：
+  1. 存在性：Harbor 仓库在、本地没有 → 未安装（old=None）
+  2. 待更新：版本 tag（时间戳格式）的仓库，Harbor 最新时间 > 本地 → 待更新
+- 类型路由（Q3）：版本 tag 仓库按 annotation com.callfans.type=frontend/sql 走
+  state 记账对比；其余默认 server，读 config Labels 确认类型与 changelog（Q4）
+- base（固定 tag，如 mysql:8.0.24 / latest）只做存在性、不检验 tag
+- docker 不可用时跳过 server/base 类（避免把"查不到"当成"全都有新版"），frontend 照常
 """
 
 from __future__ import annotations
@@ -82,56 +86,29 @@ class Checker:
 
         exclude = set(self.cfg.tag_exclude)
         pending: list[PendingItem] = []
-        # compose 清单（部署真值来源）：harbor 托管镜像走版本比对，
-        # 第三方镜像（mysql/redis 等）只查存在性（首次安装场景）
+        # compose 清单（部署真值来源）：逐个镜像走统一「存在性 →（版本 tag 则）时间比对」
         compose_images: list[ComposeImage] = []
         if self.cfg.compose_file and docker_ok:
             compose_images = scan_compose_images(self.cfg.compose_file, self.cfg.harbor_project)
-        harbor_managed = {ci.harbor_repo for ci in compose_images if ci.is_harbor}
 
-        for repo in self.harbor.list_repos():
-            # 单仓库 tag 获取失败（如已删除/编码 404）跳过继续，不炸整轮检查
-            try:
-                tags = [t for t in self.harbor.repo_tags(repo) if is_version_tag(t.tag, exclude)]
-            except Exception as e:
-                log.warning("仓库 %s tag 获取失败，跳过: %s", repo, e)
-                continue
-            if not tags:
-                continue
-            declared = next(
-                (t.annotations.get(KEY_TYPE) for t in tags if t.annotations.get(KEY_TYPE)), None
-            )
-            if declared == TYPE_FRONTEND:
-                item = self._state_repo(repo, declared, tags)
-            elif declared == TYPE_SQL:
-                # Q9（2026-09-20）：sql 制品流由 sqlsync 域（云库→B库同步）替代
-                log.debug("sql 仓库 %s 由 sqlsync 域处理，制品流忽略", repo)
-                continue
-            else:
-                # 配了 compose 时，server 类只报 compose 实际引用的镜像
-                # （未部署的仓库报"待更新"会误导——更新也无处落）
-                if compose_images and repo not in harbor_managed:
-                    log.debug("harbor 仓库 %s 不在 compose 清单中，跳过", repo)
+        if compose_images:
+            for ci in compose_images:
+                item = self._check_image(ci, local, local_images, docker_ok, exclude)
+                if item is not None:
+                    pending.append(item)
+        else:
+            # 无 compose：全量 harbor 仓库走版本比对（向后兼容）
+            for repo in self.harbor.list_repos():
+                try:
+                    tags = [t for t in self.harbor.repo_tags(repo) if is_version_tag(t.tag, exclude)]
+                except Exception as e:
+                    log.warning("仓库 %s tag 获取失败，跳过: %s", repo, e)
                     continue
-                item = self._server_repo(repo, tags, local if docker_ok else None)
-            if item is not None:
-                pending.append(item)
-
-        # 第三方基础镜像：不存在 → 待安装（版本由 compose 固定，不比版本）
-        for ci in compose_images:
-            if ci.is_harbor:
-                continue
-            tag = _tag_of(ci.ref)
-            if local_has_image(local_images, ci.repo, tag):
-                continue
-            pending.append(PendingItem(
-                name=ci.repo,
-                type=TYPE_BASE,
-                old=None,
-                new=tag or "latest",
-                changelog=f"compose 服务 {ci.service}：镜像未安装，将拉取 {ci.ref}",
-                alias=ci.service,  # 复用 alias 字段携带 compose 服务名
-            ))
+                if not tags:
+                    continue
+                item = self._check_version_repo(repo, tags, local, docker_ok)
+                if item is not None:
+                    pending.append(item)
 
         checked_at = datetime.now(timezone.utc).isoformat()
         plan = UpdatePlan(checked_at=checked_at, pending=pending)
@@ -142,6 +119,58 @@ class Checker:
             log.error("state.json 写入失败: %s", e)
         log.info("检查完成: %d 项待更新", len(pending))
         return plan
+
+    # ---------- 统一入口 ----------
+
+    def _check_image(self, ci: ComposeImage, local: dict, local_images: list,
+                     docker_ok: bool, exclude: set[str]) -> PendingItem | None:
+        """单个 compose 镜像的统一判定：存在性 →（版本 tag 则）时间比对。
+
+        - 第三方（无 harbor 前缀）→ base 存在性
+        - harbor 托管：取 tag；有版本 tag → server/frontend 时间比对；
+          只有非版本 tag → base 存在性；无任何 artifact / 404 → 不报
+        """
+        if not ci.is_harbor:
+            return self._base_item(ci, local_images)
+        try:
+            all_tags = self.harbor.repo_tags(ci.harbor_repo)
+        except Exception as e:
+            log.warning("仓库 %s tag 获取失败，跳过: %s", ci.harbor_repo, e)
+            return None
+        if not all_tags:
+            return None  # 仓库无任何 artifact（未推送/空仓库）→ 不报
+        tags = [t for t in all_tags if is_version_tag(t.tag, exclude)]
+        if tags:
+            return self._check_version_repo(ci.harbor_repo, tags, local, docker_ok)
+        return self._base_item(ci, local_images)
+
+    def _check_version_repo(self, repo: str, tags, local: dict,
+                            docker_ok: bool) -> PendingItem | None:
+        """版本 tag 仓库：server/frontend 的「存在性 + 时间比对」（未安装 old=None）。"""
+        declared = next(
+            (t.annotations.get(KEY_TYPE) for t in tags if t.annotations.get(KEY_TYPE)), None
+        )
+        if declared == TYPE_FRONTEND:
+            return self._state_repo(repo, TYPE_FRONTEND, tags)
+        if declared == TYPE_SQL:
+            # Q9（2026-09-20）：sql 制品流由 sqlsync 域（云库→B库同步）替代
+            log.debug("sql 仓库 %s 由 sqlsync 域处理，制品流忽略", repo)
+            return None
+        return self._server_repo(repo, tags, local if docker_ok else None)
+
+    def _base_item(self, ci: ComposeImage, local_images: list) -> PendingItem | None:
+        """base：只判断是否存在（不检验 tag；版本由 compose 固定）。"""
+        if local_has_image(local_images, ci.repo):
+            return None
+        tag = _tag_of(ci.ref)
+        return PendingItem(
+            name=ci.repo,
+            type=TYPE_BASE,
+            old=None,
+            new=tag or "latest",
+            changelog=f"compose 服务 {ci.service}：镜像未安装，将拉取 {ci.ref}",
+            alias=ci.service,  # 复用 alias 字段携带 compose 服务名
+        )
 
     # ---------- server（docker 镜像）----------
 

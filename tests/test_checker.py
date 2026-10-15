@@ -256,14 +256,13 @@ def test_base_image_present_not_pending(tmp_path):
     assert [p for p in plan.pending if p.type == "base"] == []
 
 
-def test_base_image_tag_mismatch_pending(tmp_path):
-    """compose 版本与本地不同（8.0.20 → 8.0.24）→ 待安装。"""
+def test_base_image_exists_any_tag_not_pending(tmp_path):
+    """base 只判断存在、不检验 tag：本地 mysql 8.0.20、compose 8.0.24 → 不报（2026-10-15）。"""
     harbor = FakeHarbor(repos={})
     rows = [DockerImage("mysql", "8.0.20", "sha256:a")]
     plan = run_checker(harbor, docker_rows=rows, state=StateStore(tmp_path / "s.json"),
                        cfg=_compose_cfg(tmp_path))
-    mysql = next(p for p in plan.pending if p.name == "mysql")
-    assert mysql.new == "8.0.24"
+    assert [p for p in plan.pending if p.name == "mysql"] == []
 
 
 def test_harbor_repo_not_in_compose_skipped_when_compose_set(tmp_path):
@@ -310,3 +309,69 @@ def test_single_repo_tag_failure_skipped_not_fatal(tmp_path):
     names = {p.name for p in plan.pending}
     assert "callfans/api" in names          # 好仓库照常产出
     assert "callfans/broken-repo" not in names
+
+
+def test_harbor_base_no_version_tag_existence_check(tmp_path):
+    """harbor 托管但无版本 tag 的镜像走存在性检查（B 方案，2026-10-15）。
+
+    此前这类仓库（如 callfans/xray-rest:latest）加了前缀后进 harbor 分支、
+    latest 被 is_version_tag 过滤 → 既不报待安装也不报待更新。
+    """
+    f = tmp_path / "docker-compose.yml"
+    f.write_text(
+        "services:\n"
+        "  xray-rest:\n    image: ${HARBOR_REGISTRY}/callfans/xray-rest:latest\n"
+        "  callfans-api:\n    image: ${HARBOR_REGISTRY}/callfans/callfans-api:${CALLFANS_API_TAG}\n",
+        encoding="utf-8",
+    )
+    harbor = FakeHarbor(repos={
+        "callfans/xray-rest": [mk("callfans/xray-rest", "latest", "2026-09-12T13:29:21Z")],
+        "callfans/callfans-api": [
+            mk("callfans/callfans-api", "20260912132921-123a066", "2026-09-12T13:29:21Z"),
+        ],
+    }, labels={("callfans/callfans-api", "20260912132921-123a066"): {
+        KEY_TYPE: TYPE_SERVER,
+    }})
+    plan = run_checker(harbor, docker_rows=[], state=StateStore(tmp_path / "s.json"),
+                       cfg=make_cfg(compose_file=f))
+    pending = {(p.type, p.name) for p in plan.pending}
+    # xray-rest：harbor 托管、无版本 tag → 本机没有 → 待安装
+    assert ("base", "/callfans/xray-rest") in pending
+    # callfans-api：有版本 tag → 走版本比对，不被当作 base 存在性检查
+    assert ("base", "/callfans/callfans-api") not in pending
+
+
+def test_harbor_base_present_not_pending(tmp_path):
+    """harbor 托管无版本 tag 的镜像，本机已装 → 不报待安装。"""
+    f = tmp_path / "docker-compose.yml"
+    f.write_text(
+        "services:\n"
+        "  xray-rest:\n    image: ${HARBOR_REGISTRY}/callfans/xray-rest:latest\n",
+        encoding="utf-8",
+    )
+    harbor = FakeHarbor(repos={
+        "callfans/xray-rest": [mk("callfans/xray-rest", "latest", "2026-09-12T13:29:21Z")],
+    })
+    rows = [DockerImage("47.87.66.98/callfans/xray-rest", "latest", "sha256:a")]
+    plan = run_checker(harbor, docker_rows=rows, state=StateStore(tmp_path / "s.json"),
+                       cfg=make_cfg(compose_file=f))
+    assert [p for p in plan.pending if p.type == "base"] == []
+
+
+def test_harbor_image_no_artifact_not_reported(tmp_path):
+    """harbor 前缀但 Harbor 里没有 artifact（未推送/空仓库）→ 不报。
+
+    统一规则（2026-10-15）：存在性 = 「Harbor 有 artifact + 本地没有」；
+    Harbor 无 artifact → 无源可装，不报。
+    """
+    f = tmp_path / "docker-compose.yml"
+    f.write_text(
+        "services:\n"
+        "  scrcpy-live:\n    image: ${HARBOR_REGISTRY}/callfans/scrcpy-live:latest\n",
+        encoding="utf-8",
+    )
+    harbor = FakeHarbor(repos={"callfans/scrcpy-live": []})  # 仓库在但无任何 tag
+    plan = run_checker(harbor, docker_rows=[], state=StateStore(tmp_path / "s.json"),
+                       cfg=make_cfg(compose_file=f))
+    pending = {(p.type, p.name) for p in plan.pending}
+    assert ("base", "/callfans/scrcpy-live") not in pending
