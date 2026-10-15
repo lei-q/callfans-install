@@ -271,7 +271,7 @@ def test_tray_controller_keeps_menu_reference(qapp):
     assert tray.icon.contextMenu() is tray.menu  # C++ 侧菜单仍存活
     # 菜单包含关键动作
     actions = [a.text() for a in tray.menu.actions()]
-    for expect in ("打开主窗口", "检查更新", "立即更新", "退出"):
+    for expect in ("打开主窗口", "打开平台", "检查更新", "立即更新", "退出"):
         assert expect in actions
     assert tray.icon.contextMenu() is not None
 
@@ -390,3 +390,93 @@ def test_pull_confirm_continue_sends_continue(qapp, monkeypatch):
     w._on_event({"event": "update_progress",
                  "data": {"item": "callfans/callfans-rpa", "stage": "pull_confirm", "elapsed": 700}})
     assert sent == ["continue"]
+
+
+# ---------- 首页 / 打开平台（2026-10-15 UI 改版）----------
+
+
+def test_platform_url():
+    from callfans.ui.main_window import platform_url
+
+    assert platform_url("192.168.1.20") == "https://192.168.1.20:443/social_web"
+
+
+def test_open_platform_uses_host_ip(qapp, monkeypatch):
+    """打开平台：优先用 status 带回的部署 HOST_IP。"""
+    import callfans.ui.main_window as mw
+
+    opened: list[str] = []
+    monkeypatch.setattr(mw.QDesktopServices, "openUrl",
+                        staticmethod(lambda url: opened.append(url.toString()) or True))
+    w = mw.MainWindow(poll_enabled=False)
+    w._apply_state(({"busy": False, "updating": False, "host_ip": "10.0.0.8"},
+                    {"checked_at": None, "pending": []}))
+    w.btn_open_platform.click()
+    assert opened == ["https://10.0.0.8:443/social_web"]
+    assert w.label_platform_url.text() == "https://10.0.0.8:443/social_web"
+
+
+def test_open_platform_falls_back_to_detected_ip(qapp, monkeypatch):
+    """status 没有 HOST_IP（服务未运行/未配置）→ 本机探测兜底。"""
+    import callfans.core.host_ip as hip
+    import callfans.ui.main_window as mw
+
+    opened: list[str] = []
+    monkeypatch.setattr(mw.QDesktopServices, "openUrl",
+                        staticmethod(lambda url: opened.append(url.toString()) or True))
+    monkeypatch.setattr(hip, "detect_host_ip", lambda: "172.16.0.5")
+    w = mw.MainWindow(poll_enabled=False)
+    w.open_platform()
+    assert opened == ["https://172.16.0.5:443/social_web"]
+
+
+def test_open_platform_no_ip_warns(qapp, monkeypatch):
+    import callfans.core.host_ip as hip
+    import callfans.ui.main_window as mw
+
+    opened: list[str] = []
+    warned: list[str] = []
+    monkeypatch.setattr(mw.QDesktopServices, "openUrl",
+                        staticmethod(lambda url: opened.append(url) or True))
+    monkeypatch.setattr(hip, "detect_host_ip", lambda: None)
+    monkeypatch.setattr(mw.QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warned.append(a[2])))
+    w = mw.MainWindow(poll_enabled=False)
+    w.open_platform()
+    assert opened == []
+    assert warned and "刷新 IP" in warned[0]
+
+
+def test_home_stats_and_status_pill(qapp):
+    """首页卡片：未安装（old=None）与待更新分开计数；状态胶囊随服务状态变化。"""
+    w = MainWindow(poll_enabled=False)
+    w._apply_state((
+        {"busy": False, "updating": False, "last_check": None,
+         "sqlsync": {"last_status": "success"}},
+        _pending(
+            {"name": "/callfans/mysql", "type": "base", "old": None, "new": "8.0.24"},
+            {"name": "callfans/api", "type": "server", "old": "a", "new": "b"},
+            {"name": "(sqlsync)", "type": "sqlsync", "old": None, "new": "3 条数据库变更"},
+        ),
+    ))
+    assert w.stat_install.text() == "1"
+    assert w.stat_update.text() == "2"      # server 升级 + 数据库变更
+    assert w.stat_sql.text() == "正常"
+    assert w.status_pill.text() == "服务运行中"
+    assert w.status_pill.property("tone") == "ok"
+
+    w._apply_state(({"busy": True, "updating": False}, {"checked_at": None, "pending": []}))
+    assert w.status_pill.text() == "检查中"
+    assert not w.btn_home_check.isEnabled()  # 检查中首页按钮也禁用
+
+
+def test_navigation_switches_pages(qapp):
+    w = MainWindow(poll_enabled=False)
+    assert w.pages.currentWidget() is w.page_home      # 默认首页
+    w.nav_buttons["updates"].click()
+    assert w.pages.currentWidget() is w.page_updates
+    assert w.nav_buttons["updates"].isChecked()
+    w.btn_go_updates.click()
+    assert w.pages.currentWidget() is w.page_updates
+    w.nav_buttons["home"].click()
+    assert w.pages.currentWidget() is w.page_home

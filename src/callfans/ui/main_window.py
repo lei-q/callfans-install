@@ -1,6 +1,10 @@
-"""主窗口：检查更新 / 立即更新 两按钮 + 待更新列表 + changelog 面板 + 进度日志。
+"""主窗口：左侧导航 + 两页（首页 / 更新管理）。
 
-数据获取在 QThread 中执行 IPC（检查/更新可能耗时数分钟），结果经信号回主线程。
+首页：品牌主视觉 + 「打开平台」（浏览器打开 https://本机IP:443/social_web）+
+待安装/待更新/最近检查/SQL 同步 数据卡片 + 快捷操作。
+更新管理：检查更新 / 立即更新 + 待更新列表 + changelog 面板 + 进度日志。
+
+数据获取在 daemon 线程中执行 IPC（检查/更新可能耗时数分钟），结果经信号回主线程。
 轮询（默认 5s）拿 status+pending，定时检查命中新版本时通过 new_pending 信号
 通知托盘弹气泡。
 """
@@ -8,19 +12,37 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime
 
-from PySide6.QtCore import Qt, QObject, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QSize, Qt, QObject, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
+    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
+    QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import client
+from . import client, theme
 from .client import ServiceUnavailable
 
 _POLL_SECONDS = 5
+_PLATFORM_PORT = 443
+_PLATFORM_PATH = "/social_web"
+
+
+def platform_url(ip: str) -> str:
+    """平台入口地址（本机 IP + 443 + /social_web）。"""
+    return f"https://{ip}:{_PLATFORM_PORT}{_PLATFORM_PATH}"
+
+
+def _fmt_time(iso: str | None) -> str:
+    """ISO 时间（UTC）→ 本地「MM-DD HH:MM」；无值返回「—」。"""
+    if not iso:
+        return "—"
+    try:
+        return datetime.fromisoformat(iso).astimezone().strftime("%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return str(iso)
 
 # 阶段 → 展示文案（舞台指示器与日志）
 _STAGE_TEXT = {
@@ -81,45 +103,75 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"助手管家 v{__version__}")
         from .tray import _make_icon
         self.setWindowIcon(_make_icon())  # 任务栏/窗口图标（logo.svg）
-        self.resize(760, 520)
+        self.setStyleSheet(theme.STYLESHEET)
+        self.resize(1080, 700)
+        self.setMinimumSize(900, 580)
         self._workers: list[Worker] = []
         self._busy = False  # 检查/更新进行中（退出确认用）
         self._last_seen_check: str | None = None  # 用于识别"新一轮检查结果"
         self._first_refresh = True
         self._prompted_versions: set[str] = set()
+        self._host_ip: str | None = None  # 部署 .env 的 HOST_IP（status 轮询带回）
         self.log_line.connect(self.log)
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
+        # ---- 外壳：左侧导航 + 右侧分页 ----
+        shell = QWidget()
+        shell_layout = QHBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self._build_sidebar(__version__))
+        content = QFrame()
+        content.setObjectName("contentArea")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(24, 20, 24, 20)
+        self.pages = QStackedWidget()
+        content_layout.addWidget(self.pages)
+        shell_layout.addWidget(content, 1)
+
+        # ---- 更新管理页 ----
+        self.page_updates = QWidget()
+        layout = QVBoxLayout(self.page_updates)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        head = QHBoxLayout()
+        title = QLabel("更新管理")
+        title.setObjectName("pageTitle")
+        head.addWidget(title)
+        head.addStretch(1)
+        self.label_status = QLabel("初始化…")
+        self.label_status.setObjectName("muted")
+        head.addWidget(self.label_status)
+        layout.addLayout(head)
 
         top = QHBoxLayout()
-        self.btn_check = QPushButton("检查更新")
-        self.btn_update = QPushButton("立即更新")
-        self.btn_hostip = QPushButton("刷新 IP")
+        self.btn_check = QPushButton(theme.icon("refresh"), "检查更新")
+        self.btn_update = QPushButton(theme.icon("download", "#FFFFFF"), "立即更新")
+        self.btn_update.setObjectName("primary")
+        self.btn_hostip = QPushButton(theme.icon("network"), "刷新 IP")
         self.btn_hostip.setToolTip("探测当前宿主机 IP，写入部署 .env 并重建 xray-rest 容器")
         self.btn_hostip.clicked.connect(self.on_refresh_host_ip)
         # 检查新版 / 退出 移至托盘右键菜单（tray.py），主窗口不再放按钮
         self.btn_check.clicked.connect(self.on_check_clicked)
         self.btn_update.clicked.connect(self.on_update_clicked)
+        for b in (self.btn_check, self.btn_update, self.btn_hostip):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
         QShortcut(QKeySequence.Quit, self, self.request_quit)  # Ctrl+Q / Ctrl+Cmd+Q
-        self.label_status = QLabel("初始化…")
         top.addWidget(self.btn_check)
         top.addWidget(self.btn_update)
         top.addStretch(1)
-        top.addWidget(self.label_status)
-        top.addWidget(self.btn_hostip)
+
+        # 舞台指示器（阶段文字 + 旋转动画，长阶段不"死屏"）放工具栏右侧；
+        # 进度条单独一行，仅更新时显示（隐藏时不占位）
+        self.stage_label = QLabel("")
+        self.stage_label.setObjectName("muted")
+        top.addWidget(self.stage_label)
         layout.addLayout(top)
 
-        # 更新进度条 + 舞台指示器（阶段文字 + 旋转动画，长阶段不"死屏"）
-        progress_row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setVisible(False)
-        self.stage_label = QLabel("")
-        self.stage_label.setStyleSheet("color: #666;")
-        progress_row.addWidget(self.progress, 1)
-        progress_row.addWidget(self.stage_label)
-        layout.addLayout(progress_row)
+        layout.addWidget(self.progress)
 
         self._stage_text = ""
         self._spinner_idx = 0
@@ -130,6 +182,10 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["✓", "类型", "名称", "当前版本", "新版本", "alias"])
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)  # 长名称/tag 单行省略，悬停 tooltip 看全文
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)  # 可拖动
         header.setSectionsMovable(True)
@@ -149,17 +205,20 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.changelog_view)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
-        layout.addWidget(splitter, 1)
 
         self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
         self.log_view.setMinimumHeight(80)  # 不设上限：由分割条自由调高（v0.4.4 实测修复）
         self.log_view.setMaximumBlockCount(2000)  # pull 进度行多，自动裁剪旧行
         self.log_view.setPlaceholderText("进度与结果（实时）")
 
         log_header = QHBoxLayout()
-        log_header.addWidget(QLabel("进度与结果"))
+        log_title = QLabel("进度与结果")
+        log_title.setObjectName("sectionTitle")
+        log_header.addWidget(log_title)
         self.btn_toggle_log = QPushButton("⤢ 展开")
+        self.btn_toggle_log.setObjectName("ghost")
         self.btn_toggle_log.setToolTip("展开/收起进度与结果区域（也可直接拖动上方分割条调高）")
         self._log_expanded = False
         self.btn_toggle_log.clicked.connect(self._toggle_log_size)
@@ -170,11 +229,13 @@ class MainWindow(QMainWindow):
         self.btn_export_sql.clicked.connect(self._export_selected_sql)
         self.btn_clear_log = QPushButton("清空日志")
         self.btn_clear_log.clicked.connect(self.log_view.clear)
+        for b in (self.btn_toggle_log, self.btn_export_sql, self.btn_clear_log):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
         log_header.addWidget(self.btn_export_sql)
         log_header.addWidget(self.btn_clear_log)
         log_panel = QWidget()
         log_layout = QVBoxLayout(log_panel)
-        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.setContentsMargins(0, 8, 0, 0)
         log_layout.addLayout(log_header)
         log_layout.addWidget(self.log_view)
 
@@ -190,7 +251,12 @@ class MainWindow(QMainWindow):
         vsplit.setSizes([300, 240])
         layout.addWidget(vsplit, 1)
 
-        self.setCentralWidget(central)
+        # ---- 首页 ----
+        self.page_home = self._build_home_page()
+        self.pages.addWidget(self.page_home)
+        self.pages.addWidget(self.page_updates)
+        self.setCentralWidget(shell)
+        self.show_page("home")
 
         if poll_enabled:
             self._timer = QTimer(self)
@@ -202,6 +268,213 @@ class MainWindow(QMainWindow):
             self.listener = EventListener(self)
             self.listener.event_received.connect(self._on_event)
             self.listener.start()
+
+    # ---------- 布局构建 ----------
+
+    def _build_sidebar(self, version: str) -> QFrame:
+        from .tray import LOGO_SVG
+
+        bar = QFrame()
+        bar.setObjectName("sidebar")
+        bar.setFixedWidth(200)
+        v = QVBoxLayout(bar)
+        v.setContentsMargins(14, 20, 14, 16)
+        v.setSpacing(6)
+
+        brand = QHBoxLayout()
+        logo = QLabel()
+        logo.setPixmap(theme.render_svg(LOGO_SVG, 30))
+        brand.addWidget(logo)
+        name = QLabel("助手管家")
+        name.setObjectName("brandTitle")
+        brand.addWidget(name)
+        brand.addStretch(1)
+        v.addLayout(brand)
+        v.addSpacing(22)
+
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+        self.nav_buttons: dict[str, QPushButton] = {}
+        for key, text, icon_name in (("home", "首页", "home"), ("updates", "更新管理", "layers")):
+            b = QPushButton(theme.icon(icon_name, "#94A3B8", checked_color="#FFFFFF"), f"  {text}")
+            b.setObjectName("navButton")
+            b.setCheckable(True)
+            b.setIconSize(QSize(18, 18))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.show_page(k))
+            self._nav_group.addButton(b)
+            self.nav_buttons[key] = b
+            v.addWidget(b)
+        v.addStretch(1)
+
+        ver = QLabel(f"v{version}")
+        ver.setObjectName("brandVersion")
+        v.addWidget(ver)
+        return bar
+
+    def _build_home_page(self) -> QWidget:
+        from .tray import LOGO_SVG
+
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(16)
+
+        # 主视觉：品牌 + 服务状态 + 「打开平台」
+        hero = QFrame()
+        hero.setObjectName("hero")
+        h = QHBoxLayout(hero)
+        h.setContentsMargins(32, 28, 32, 28)
+        h.setSpacing(20)
+        logo = QLabel()
+        logo.setPixmap(theme.render_svg(LOGO_SVG.replace("#CE4141", "#FFFFFF"), 72))
+        h.addWidget(logo, 0, Qt.AlignmentFlag.AlignTop)
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        title = QLabel("助手管家")
+        title.setObjectName("heroTitle")
+        sub = QLabel("Callfans 平台的部署、检查与一键更新")
+        sub.setObjectName("heroSubtitle")
+        self.status_pill = QLabel("连接服务中…")
+        self.status_pill.setObjectName("pill")
+        pill_row = QHBoxLayout()
+        pill_row.addWidget(self.status_pill)
+        pill_row.addStretch(1)
+        left.addWidget(title)
+        left.addWidget(sub)
+        left.addSpacing(8)
+        left.addLayout(pill_row)
+        h.addLayout(left, 1)
+
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        right.addStretch(1)
+        self.btn_open_platform = QPushButton(
+            theme.icon("external", theme.PRIMARY, 20), "  打开平台")
+        self.btn_open_platform.setObjectName("heroButton")
+        self.btn_open_platform.setIconSize(QSize(20, 20))
+        self.btn_open_platform.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_open_platform.setToolTip("在默认浏览器打开平台")
+        self.btn_open_platform.clicked.connect(self.open_platform)
+        self.label_platform_url = QLabel(platform_url("本机IP"))
+        self.label_platform_url.setObjectName("heroHint")
+        self.label_platform_url.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        right.addWidget(self.btn_open_platform, 0, Qt.AlignmentFlag.AlignRight)
+        right.addWidget(self.label_platform_url, 0, Qt.AlignmentFlag.AlignRight)
+        right.addStretch(1)
+        h.addLayout(right)
+        v.addWidget(hero)
+
+        # 数据卡片
+        stats = QHBoxLayout()
+        stats.setSpacing(12)
+        self.stat_install = self._stat_card(stats, "package", "待安装", "#2563EB")
+        self.stat_update = self._stat_card(stats, "arrow-up", "待更新", theme.PRIMARY)
+        self.stat_last_check = self._stat_card(stats, "clock", "最近检查", theme.MUTED)
+        self.stat_sql = self._stat_card(stats, "database", "SQL 同步", theme.SUCCESS)
+        v.addLayout(stats)
+
+        # 快捷操作
+        card = QFrame()
+        card.setObjectName("card")
+        c = QVBoxLayout(card)
+        c.setContentsMargins(20, 16, 20, 18)
+        c.setSpacing(12)
+        cap = QLabel("快捷操作")
+        cap.setObjectName("sectionTitle")
+        c.addWidget(cap)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.btn_home_check = QPushButton(theme.icon("refresh"), "检查更新")
+        self.btn_home_check.clicked.connect(self.on_check_clicked)
+        self.btn_go_updates = QPushButton(theme.icon("layers"), "查看待更新")
+        self.btn_go_updates.clicked.connect(lambda: self.show_page("updates"))
+        for b in (self.btn_home_check, self.btn_go_updates):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.addWidget(b)
+        row.addWidget(self.btn_hostip)
+        row.addStretch(1)
+        c.addLayout(row)
+        v.addWidget(card)
+        v.addStretch(1)
+        return page
+
+    def _stat_card(self, row: QHBoxLayout, icon_name: str, caption: str, color: str) -> QLabel:
+        card = QFrame()
+        card.setObjectName("statCard")
+        g = QVBoxLayout(card)
+        g.setContentsMargins(18, 16, 18, 16)
+        g.setSpacing(4)
+        top = QHBoxLayout()
+        ico = QLabel()
+        ico.setPixmap(theme.icon_pixmap(icon_name, color, 20))
+        top.addWidget(ico)
+        top.addStretch(1)
+        g.addLayout(top)
+        value = QLabel("—")
+        value.setObjectName("statValue")
+        g.addWidget(value)
+        cap = QLabel(caption)
+        cap.setObjectName("statCaption")
+        g.addWidget(cap)
+        row.addWidget(card, 1)
+        return value
+
+    def show_page(self, key: str) -> None:
+        page = self.page_home if key == "home" else self.page_updates
+        self.pages.setCurrentWidget(page)
+        self.nav_buttons[key].setChecked(True)
+        if key == "updates" and getattr(self, "_sized_plan_id", None) is not None:
+            # 表格可能在首页可见时填充（更新页隐藏、宽度未知），切页后按真实宽度铺满
+            QTimer.singleShot(0, self._auto_fit_columns)
+
+    def _set_pill(self, text: str, tone: str) -> None:
+        self.status_pill.setText(text)
+        self.status_pill.setProperty("tone", tone)
+        theme.repolish(self.status_pill)
+
+    # ---------- 打开平台 ----------
+
+    def open_platform(self) -> None:
+        """默认浏览器打开 https://本机IP:443/social_web。
+
+        IP 优先用部署 .env 的 HOST_IP（与 xray-rest 一致），取不到再本机探测。
+        """
+        ip = self._host_ip
+        if not ip:
+            from ..core.host_ip import detect_host_ip
+
+            ip = detect_host_ip()
+        if not ip:
+            self.log("打开平台失败：无法获取本机 IP（可先点「刷新 IP」）")
+            QMessageBox.warning(self, "打开平台", "无法获取本机 IP，请先点击「刷新 IP」。")
+            return
+        url = platform_url(ip)
+        self.label_platform_url.setText(url)
+        if not QDesktopServices.openUrl(QUrl(url)):
+            self.log(f"打开浏览器失败，请手动访问: {url}")
+            return
+        self.log(f"已在浏览器打开平台: {url}")
+
+    def _update_home(self, status: dict, pending: dict) -> None:
+        items = pending.get("pending") or []
+        not_installed = [p for p in items if p.get("old") is None and p.get("type") != "sqlsync"]
+        self.stat_install.setText(str(len(not_installed)))
+        self.stat_update.setText(str(len(items) - len(not_installed)))
+        self.stat_last_check.setText(_fmt_time(status.get("last_check")))
+        sql = status.get("sqlsync") or {}
+        last_sql = sql.get("last_status")
+        self.stat_sql.setText(
+            "—" if not last_sql else ("正常" if last_sql == "success" else "异常"))
+        if status.get("updating"):
+            self._set_pill("更新中", "busy")
+        elif status.get("busy"):
+            self._set_pill("检查中", "busy")
+        else:
+            self._set_pill("服务运行中", "ok")
+        if self._host_ip:
+            self.label_platform_url.setText(platform_url(self._host_ip))
 
     # ---------- 数据 ----------
 
@@ -222,6 +495,7 @@ class MainWindow(QMainWindow):
             self.label_status.setText("更新进行中（服务响应缓慢，属正常）…")
             return
         self.label_status.setText("服务未运行，正在尝试启动…")
+        self._set_pill("服务未运行", "down")
         self._spawn_state = getattr(self, "_spawn_state", {})
         ensure_service_running(self._spawn_state)
 
@@ -237,16 +511,19 @@ class MainWindow(QMainWindow):
             mark = "✓" if sql.get("last_status") == "success" else "⚠"
             sql_text = f"｜SQL同步: {mark}{sql.get('last_status')}"
         host_ip = status.get("host_ip")
+        self._host_ip = host_ip or None
         ip_text = f"｜IP: {host_ip}" if host_ip else ""
         tz = status.get("timezone")
         tz_text = f"｜时区: {tz}" if tz else ""
         self.label_status.setText(
-            f"{state_text}{ip_text}{tz_text}｜最近检查: {last or '-'}{sql_text}")
+            f"{state_text}{ip_text}{tz_text}｜最近检查: {_fmt_time(last)}{sql_text}")
         self.btn_check.setEnabled(not busy)
+        self.btn_home_check.setEnabled(not busy)
         self._update_update_button()
         self.busy_changed.emit(busy)  # 托盘菜单"检查更新/立即更新"跟随禁用
 
         self._fill_table(pending)
+        self._update_home(status, pending)
 
         checked_at = pending.get("checked_at")
         count = len(pending.get("pending") or [])
@@ -558,6 +835,7 @@ class MainWindow(QMainWindow):
     def on_check_clicked(self) -> None:
         self._busy = True
         self.btn_check.setEnabled(False)
+        self.btn_home_check.setEnabled(False)
         self.btn_update.setEnabled(False)
         self.log("开始检查…")
         self._run(client.check, self._check_done, self._check_failed)

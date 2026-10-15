@@ -77,16 +77,19 @@ class TrayController:
         self.menu = QMenu()
         menu = self.menu
         act_show = QAction("打开主窗口", menu)  # parent 归 menu 所有，防 GC
+        act_platform = QAction("打开平台", menu)  # 浏览器打开 https://本机IP:443/social_web
         self.act_check = act_check = QAction("检查更新", menu)
         self.act_update = act_update = QAction("立即更新", menu)
         act_checkver = QAction("检查新版本…", menu)  # parent 归 menu 所有，防 GC
         act_quit = QAction("退出", menu)  # parent 归 menu 所有，防 GC
         act_show.triggered.connect(self._show_window)
+        act_platform.triggered.connect(window.open_platform)
         act_check.triggered.connect(window.on_check_clicked)
         act_update.triggered.connect(window.on_update_clicked)
         act_checkver.triggered.connect(window.on_check_version_clicked)
         act_quit.triggered.connect(window.request_quit)
         menu.addAction(act_show)
+        menu.addAction(act_platform)
         menu.addSeparator()
         menu.addAction(act_check)
         menu.addAction(act_update)
