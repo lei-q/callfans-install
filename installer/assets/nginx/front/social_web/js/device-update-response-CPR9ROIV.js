@@ -1,0 +1,1 @@
+function u(e,a){var i,r;const t=(i=e.data)==null?void 0:i.failIds;if(t!=null&&t.length&&t.includes(a))return!1;const n=(r=e.data)==null?void 0:r.successIds;return n!=null&&n.length?n.includes(a):!0}export{u as i};

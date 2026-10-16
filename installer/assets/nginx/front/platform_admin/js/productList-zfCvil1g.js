@@ -1,0 +1,1 @@
+const c="產品清單",s="同步",t="獲取產品清單失敗",n="同步 SSO 應用成功",o="同步 SSO 應用失敗",e="同步失敗",r="暫無產品數據",y={title:c,sync:s,fetchFailed:t,syncSuccess:n,syncFailed:o,syncError:e,empty:r};export{y as default,r as empty,t as fetchFailed,s as sync,e as syncError,o as syncFailed,n as syncSuccess,c as title};

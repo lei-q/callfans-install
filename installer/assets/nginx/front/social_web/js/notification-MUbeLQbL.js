@@ -1,0 +1,1 @@
+const t={title:"訊息通知",markAllRead:"全部標為已讀",clearAll:"全部清除",viewAll:"查看全部通知 >",tabs:{all:"全部",alerts:"告警",tasks:"任務",devices:"設備"},time:{justNow:"剛剛",minutesAgo:"{n} 分鐘前",hoursAgo:"{n} 小時前",daysAgo:"{n} 天前"}},a={notification:t};export{a as default,t as notification};

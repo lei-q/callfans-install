@@ -1,0 +1,1 @@
+const e="สาธิต",t="Element Plus",n="แบบฟอร์ม",s="หน้า",l={title:"ในประเทศไทย",about:"เกี่ยวกับ",document:"เอกสาร",antdv:"เวอร์ชัน Ant Design Vue","naive-ui":"เวอร์ชัน UI ของ Naive","element-plus":"เวอร์ชัน Element Plus"},o={title:e,elementPlus:t,form:n,page:s,vben:l};export{o as default,t as elementPlus,n as form,s as page,e as title,l as vben};

@@ -1,0 +1,1 @@
+const a={title:"Notifications",markAllRead:"Mark all as read",clearAll:"Clear all",viewAll:"View all notifications >",tabs:{all:"All",alerts:"Alerts",tasks:"Tasks",devices:"Devices"},time:{justNow:"just now",minutesAgo:"{n}m ago",hoursAgo:"{n}h ago",daysAgo:"{n}d ago"}},l={notification:a};export{l as default,a as notification};

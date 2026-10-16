@@ -1,0 +1,1 @@
+const n="Hệ thống quản trị vận hành",t="",h="Hệ thống quản trị vận hành mạng xã hội AI có thể mở rộng",a={appName:n,pageTitle:t,pageDesc:h};export{n as appName,a as default,h as pageDesc,t as pageTitle};

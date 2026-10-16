@@ -4,7 +4,8 @@
 ; 自启: HKCU Run 注册 callfans-ui（用户级，tech-design 模式 A），UI 再自拉起服务
 ; 部署: 安装时询问平台部署根目录，把 docker-compose.yml 复制过去，
 ;       并把 APP_ROOT / DEPLOY_ROOT / COMPOSE_FILE / FRONTEND_OUTPUT_DIR 写入 .env；
-;       时区改为下拉选择（升级时预选部署 .env 已有值），与 HOST_IP 一并写入部署 .env
+;       时区改为下拉选择（升级时预选部署 .env 已有值），与 HOST_IP 一并写入部署 .env；
+;       nginx / xray 启动数据（证书、站点、geo 库等）缺失才补到部署目录，不覆盖现场
 ; 注意：Inno Pascal 自上而下编译、无前向声明——辅助例程必须定义在引用它的
 ;       事件处理器（InitializeWizard / CurPageChanged / CurStepChanged）之前
 
@@ -34,6 +35,9 @@ Source: "..\..\dist\callfans-cli\*"; DestDir: "{app}\cli"; Flags: recursesubdirs
 Source: "..\assets\docker-compose.yml"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\.env"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\get-ip.ps1"; DestDir: "{app}\assets"; Flags: ignoreversion
+; nginx / xray 启动数据：整树打包（含空目录，如 nginx\logs），安装时按缺失补齐
+Source: "..\assets\nginx\*"; DestDir: "{app}\assets\nginx"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\assets\xray\*"; DestDir: "{app}\assets\xray"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "..\..\.env.example"; DestDir: "{app}"; DestName: ".env.example"; Flags: ignoreversion
 
 [Registry]
@@ -262,6 +266,35 @@ begin
     Result := Copy(S, Pos(' - ', S) + 3, Length(S) - Pos(' - ', S) - 2);
 end;
 
+{ 递归复制目录：缺什么补什么，已存在的文件一律不覆盖。
+
+  nginx / xray 启动数据用（证书、站点、geo 库）：首装整树落地；升级只补
+  新增文件，现场改过的证书 / 配置 / 前端不被安装包回退。 }
+procedure CopyTreeSkipExisting(const SrcDir, DstDir: String);
+var
+  Find: TFindRec;
+  SrcPath, DstPath: String;
+begin
+  ForceDirectories(DstDir);
+  if FindFirst(AddBackslash(SrcDir) + '*', Find) then
+  begin
+    try
+      repeat
+        if (Find.Name = '.') or (Find.Name = '..') then
+          Continue;
+        SrcPath := AddBackslash(SrcDir) + Find.Name;
+        DstPath := AddBackslash(DstDir) + Find.Name;
+        if Find.Attributes and FILE_ATTRIBUTE_DIRECTORY <> 0 then
+          CopyTreeSkipExisting(SrcPath, DstPath)
+        else if not FileExists(DstPath) then
+          FileCopy(SrcPath, DstPath, False);
+      until not FindNext(Find);
+    finally
+      FindClose(Find);
+    end;
+  end;
+end;
+
 { ---------- 事件处理器 ---------- }
 
 procedure InitializeWizard;
@@ -346,6 +379,13 @@ begin
       FileCopy(ComposeDst, ComposeDst + '.bak', False);
     FileCopy(ComposeSrc, ComposeDst, False);
   end;
+
+  // nginx 启动数据 → 平台根目录\nginx；xray 启动数据 → 平台根目录\server\xray
+  // （缺失才补：现场证书 / 站点 / 配置不被覆盖）
+  CopyTreeSkipExisting(ExpandConstant('{app}\assets\nginx'),
+                       AddBackslash(DeployDir) + 'nginx');
+  CopyTreeSkipExisting(ExpandConstant('{app}\assets\xray'),
+                       AddBackslash(DeployDir) + 'server\xray');
 
   // 部署 .env：不存在则从模板生成（存在则保留现场改过的密码等）
   DeployEnv := AddBackslash(DeployDir) + '.env';

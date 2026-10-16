@@ -1,0 +1,1 @@
+const t={title:"การแจ้งเตือน",markAllRead:"ทำเครื่องหมายว่าอ่านแล้วทั้งหมด",clearAll:"ล้างทั้งหมด",viewAll:"ดูการแจ้งเตือนทั้งหมด >",tabs:{all:"ทั้งหมด",alerts:"การแจ้งเตือน",tasks:"งาน",devices:"อุปกรณ์"},time:{justNow:"เมื่อสักครู่",minutesAgo:"{n} นาทีที่แล้ว",hoursAgo:"{n} ชั่วโมงที่แล้ว",daysAgo:"{n} วันที่แล้ว"}},a={notification:t};export{a as default,t as notification};

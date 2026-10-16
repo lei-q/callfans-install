@@ -1,0 +1,1 @@
+const t={importLogTitle:"Nhật ký nhập",userName:"Người tạo",result:"Kết quả",confirmExport:"Tải xuống bản ghi nhập này?",failedReason:"Lý do thất bại"},o={importLog:t};export{o as default,t as importLog};

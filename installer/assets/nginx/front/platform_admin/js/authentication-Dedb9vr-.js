@@ -1,0 +1,1 @@
+const t="แบ็กเอนด์ปฏิบัติการ",a="",e="แพลตฟอร์มหลังบ้านจัดการปฏิบัติการโซเชียลมีเดีย AI ที่ปรับขนาดได้",c={appName:t,pageTitle:a,pageDesc:e};export{t as appName,c as default,e as pageDesc,a as pageTitle};

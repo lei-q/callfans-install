@@ -1,0 +1,1 @@
+const o={importLogTitle:"Import Log",userName:"Created By",result:"Result",confirmExport:"Download this import record?",failedReason:"Failure reason"},r={importLog:o};export{r as default,o as importLog};

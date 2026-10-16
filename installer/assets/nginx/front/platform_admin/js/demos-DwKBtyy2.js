@@ -1,0 +1,1 @@
+const n="Demo",e="Element Plus",t="Biểu mẫu",i="Trang",s={title:"Dự án",about:"Giới thiệu",document:"Tài liệu",antdv:"Phiên bản Ant Design Vue","naive-ui":"Phiên bản Naive UI","element-plus":"Phiên bản Element Plus"},u={title:n,elementPlus:e,form:t,page:i,vben:s};export{u as default,e as elementPlus,t as form,i as page,n as title,s as vben};

@@ -1,0 +1,1 @@
+const e={title:"Chuyển múi giờ",groups:{americas:"Châu Mỹ",europeWestCentral:"Châu Âu (Tây/Trung)",europeSouthNorthEast:"Châu Âu (Nam/Bắc/Đông)",africa:"Châu Phi",middleEast:"Trung Đông",asiaPacific:"Châu Á và khác"}},u={timeZone:e};export{u as default,e as timeZone};

@@ -1,0 +1,1 @@
+const c="รายการผลิตภัณฑ์",s="ซิงค์",t="โหลดรายการผลิตภัณฑ์ล้มเหลว",n="ซิงค์แอป SSO สำเร็จ",o="ซิงค์แอป SSO ล้มเหลว",e="ซิงค์ล้มเหลว",r="ไม่มีข้อมูลผลิตภัณฑ์",y={title:c,sync:s,fetchFailed:t,syncSuccess:n,syncFailed:o,syncError:e,empty:r};export{y as default,r as empty,t as fetchFailed,s as sync,e as syncError,o as syncFailed,n as syncSuccess,c as title};

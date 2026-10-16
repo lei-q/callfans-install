@@ -1,0 +1,1 @@
+const e={title:"สลับเขตเวลา",groups:{americas:"อเมริกา",europeWestCentral:"ยุโรป (ตะวันตก/กลาง)",europeSouthNorthEast:"ยุโรป (ใต้/เหนือ/ตะวันออก)",africa:"แอฟริกา",middleEast:"ตะวันออกกลาง",asiaPacific:"เอเชียและอื่นๆ"}},t={timeZone:e};export{t as default,e as timeZone};

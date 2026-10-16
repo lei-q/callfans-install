@@ -1,0 +1,353 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <title>social_media_web</title>
+  <link rel="icon" href="./png/favicon.ico" />
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    body {
+      background-color: black;
+      display: flex;
+      justify-content: center;
+    }
+
+    .container {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .btn_list {
+      display: flex;
+      flex-shrink: 0;
+      width: 100%;
+    }
+
+    .btn_item {
+      width: calc(100% / 3);
+      flex-shrink: 0;
+      height: 60px;
+      background: #fff;
+      border: none;
+    }
+
+    .btn_item_img {
+      width: 20px;
+      height: 20px;
+      color: #333;
+    }
+
+    #app video,
+    #app canvas {
+      width: 100% !important;
+      height: 100% !important;
+      margin: 0 !important;
+    }
+
+    .aaa {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 200px;
+      height: 200px;
+      background-color: red;
+      color: #333;
+      z-index: 999;
+    }
+  </style>
+  <script src="./BgsSdk.min.1.54.0.js"></script>
+</head>
+
+<body>
+  <!-- <script src="./vconsole.min.js"></script>
+    <script>
+      var vConsole = new VConsole();
+    </script> -->
+  <!-- <script src="./eruda.min.js"></script>
+    <script>
+      eruda.init();
+    </script> -->
+  <div class="container">
+    <!-- <div class="aaa"></div> -->
+    <div id="app"></div>
+    <div class="btn_list">
+      <button class="btn_item btn_back">
+        <img src="./png/back.png" class="btn_item_img" alt="" />
+      </button>
+      <button class="btn_item btn_home">
+        <img src="./png/home.png" class="btn_item_img" alt="" />
+      </button>
+      <button class="btn_item btn_menu">
+        <img src="./png/menu.png" class="btn_item_img" alt="" />
+      </button>
+      <!--    使用以下三个事件控制安卓按键-->
+
+      <!--    <q-btn clweb SDK使用文档v0.5.docxass="col-grow" dense flat label="Home" icon="trip_origin" @click="redfinger.sendCommand($edfinger.KEY_TYPE.KEY_HOMEPAGE)"/>-->
+      <!--    <q-btn class="col-grow" dense flat label="Menu" icon="reorder" @click="redfinger.sendCommand(redfinger.KEY_TYPE.KEY_MENU)"/>-->
+    </div>
+  </div>
+
+  <script>
+    // const aaa = document.querySelector(".aaa");
+    const IdApp = document.querySelector("#app");
+    const btnItem = document.querySelectorAll(".btn_item");
+    const btnItemImg = document.querySelectorAll(".btn_item_img");
+
+    var { innerHeight, innerWidth } = window;
+    function detectDevice() {
+      // 优先使用 userAgentData
+      if (navigator.userAgentData) {
+        return navigator.userAgentData.mobile;
+      }
+
+      // 回退到用户代理检测
+      const userAgent = navigator.userAgent;
+      return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        userAgent,
+      );
+    }
+
+    const isMobile = detectDevice();
+    var btnItemHeight = isMobile ? 120 : 60;
+    var btnItemWH = isMobile ? 50 : 20;
+
+    var minSize = Math.min(innerHeight, innerWidth);
+
+    var proportion = (innerHeight - btnItemHeight) / 16;
+    var widthProportionVal = proportion * 9;
+
+    var width = null;
+    var height = null;
+    if (widthProportionVal > innerWidth) {
+      height = Math.floor((innerWidth / 9) * 16);
+      width = innerWidth;
+    } else {
+      width = Math.floor(proportion * 9);
+      height = innerHeight - btnItemHeight;
+    }
+
+    // aaa.innerHTML = `vh: ${innerHeight}<br>vw:${innerWidth}<br>width:${width},<br>height:${height}<br>proportion:${proportion}`;
+    IdApp.style.width = `${width}px`;
+    IdApp.style.height = `${height}px`;
+
+    btnItem.forEach((item) => {
+      item.style.height = `${btnItemHeight}px`;
+    });
+
+    btnItemImg.forEach((item) => {
+      item.style.width = `${btnItemWH}px`;
+      item.style.height = `${btnItemWH}px`;
+    });
+
+    try {
+      const btnBack = document.querySelector(".btn_back");
+      btnBack.addEventListener("click", btnClickBack);
+      function btnClickBack() {
+        redfinger.sendCommand(redfinger.KEY_TYPE.KEY_BACK);
+      }
+
+      const btnHome = document.querySelector(".btn_home");
+      btnHome.addEventListener("click", btnClickHome);
+      function btnClickHome() {
+        redfinger.sendCommand(redfinger.KEY_TYPE.KEY_HOMEPAGE);
+      }
+
+      const btnMenu = document.querySelector(".btn_menu");
+      btnMenu.addEventListener("click", btnClickMenu);
+      function btnClickMenu() {
+        redfinger.sendCommand(redfinger.KEY_TYPE.KEY_MENU);
+      }
+    } catch (error) {
+      console.log(error);
+    }
+    // // 获取 URL 参数
+    // function getUrlParam(name) {
+    //   const urlParams = new URLSearchParams(window.location.search);
+    //   return urlParams.get(name);
+    // }
+    // 获取 URL 参数，兼容iOS首次加载URLSearchParams解析异常bug
+    // 读取 hash 内参数
+    function getHashParam(name) {
+      let hashStr = window.location.hash.slice(1);
+      // 兜底，应对极端HTML实体转义（现在链接没有&，保留作为防护）
+      hashStr = hashStr.replace(/&amp;/g, '&');
+      hashStr = hashStr.replace(/&#38;/g, '&');
+
+      // 使用 * 分割各个参数项
+      const arr = hashStr.split('*');
+      for (let i = 0; i < arr.length; i++) {
+        const item = arr[i].split('=');
+        const key = decodeURIComponent(item[0]);
+        const val = decodeURIComponent(item.slice(1).join('='));
+        if (key === name) {
+          return val || '';
+        }
+      }
+      return null;
+    }
+
+    const TOKEN_PREFIX = 'callfans';
+    function parseCameraToken(token) {
+      if (!token || typeof token !== 'string') return null;
+
+      try {
+        let base64Str = token.replace(/-/g, '+').replace(/_/g, '/');
+        while (base64Str.length % 4) base64Str += '=';
+        const raw = atob(base64Str);
+
+        const parts = raw.split('|');
+        if (parts.length !== 2) return null;
+        if (parts[0] !== TOKEN_PREFIX) return null;
+
+        const tsStr = parts[1];
+        if (!/^\d+$/.test(tsStr)) return null;
+
+        const ts = Number(tsStr);
+        // 校验是合法13位毫秒时间戳范围
+        if (ts < 1000000000000 || ts > 4102444800000) return null;
+
+        // ❗删掉这里原来的 Date.now() >= ts 判断！解析层只管格式，过期交给上层
+        return ts;
+      } catch {
+        return null;
+      }
+    }
+
+    // 从 URL 参数构建连接信息
+
+    const padCode = getHashParam('p');
+    const remoteWsIp = getHashParam('h');
+    const rStr = getHashParam('r');
+    const cameraToken = getHashParam('t');
+
+    const [connIp, wsPort] = rStr.split(',');
+    // 还原后端原始格式
+    const remoteWsPort = `5092/${connIp}/${wsPort}`;
+
+    // Check if we're running on localhost (proxy scenario)
+    const isLocalhost =
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1";
+
+    // Determine if we should use WSS protocol
+    const useWss = true; // Always use WSS for secure connection
+
+    // If running on localhost, use the proxy port instead of the original WebSocket port
+    let wsIp = remoteWsIp;
+
+    //if (isLocalhost) {
+    // Use the proxy port - assuming proxy is set up to forward to the original IP:PORT
+    // The proxy port would be specified when starting the server
+    // For example, if proxy is running on port 9001 and forwards to original ws://10.50.0.100:9910
+    // Then we would connect to wss://localhost:9001 instead of ws://10.50.0.100:9910
+    //wsIp = 'localhost';
+    // The proxy port would need to be passed as a parameter or configured
+    // For now, we'll use a placeholder that can be replaced by the server
+    //remoteWsPort = getUrlParam('proxyPort') || 9001; // Default proxy port
+    //}
+
+    // console.log("window.location.hostname: " + window.location.hostname);
+    // console.log("padCode: " + padCode);
+    // console.log("wsIp: " + wsIp);
+    // console.log("remoteWsPort: " + remoteWsPort);
+
+    // 兜底：如果值里面包含=，把 key= 前缀剥离
+    let realCameraToken = cameraToken;
+    if (realCameraToken && realCameraToken.startsWith('cameraToken=')) {
+      realCameraToken = realCameraToken.replace('cameraToken=', '');
+    }
+    const expireTs = parseCameraToken(realCameraToken);
+
+    let tokenExpireTimer = null;
+
+    if (!(expireTs && Date.now() < expireTs)) {
+      alert("链接已过期");
+    } else if (!padCode || !remoteWsIp || !remoteWsPort) {
+      alert(
+        "获取参数失败，请确保 URL 中包含 padCode、remoteWsIp、remoteWsPort 参数",
+      );
+    } else {
+      const connectToken = {
+        padCode: padCode,
+        resultInfo: {
+          remoteList: [
+            {
+              remoteWsIp: wsIp,
+              remoteWsPort: remoteWsPort,
+            },
+          ],
+          sessionId: "2",
+          userid: "1",
+        },
+      };
+      console.log("connectToken: " + JSON.stringify(connectToken));
+      redfinger.onErrorMessage = (code) => {
+        console.warn(`onErrorMessage: ${code}`);
+      };
+      redfinger.onTimeout = (code) => {
+        console.warn(`onTimeout: ${code}`);
+      };
+      redfinger.onOpen = (code, result) => {
+        console.log(`onOpen: ${code}, ${result}`);
+        if (!result) {
+          console.warn(`onOpen error: ${code}`);
+        } else {
+          redfinger.setupVideoQuality(-1, 2048, 30);
+        }
+      };
+      redfinger.config.isWebRtc = false;
+      redfinger.config.devLevel = 0;
+      redfinger.config.devWidth = 720;
+      redfinger.config.devHeight = 1280;
+      redfinger.config.isMicrophoneLive = true;
+      redfinger.config.isCameraLive = true;
+      // Set protocol based on configuration
+      if (useWss) {
+        console.log("setProtocol: wss");
+        redfinger.setProtocol("wss"); // Use secure WebSocket
+      } else {
+        console.log("setProtocol: ws");
+        redfinger.setProtocol("ws"); // Use regular WebSocket
+      }
+      redfinger.setNavBarState(1);
+      redfinger.onNavBarState = function (code) {
+        console.log("onNavBarState---", code); // 0 显示、1 隐藏
+      };
+      try {
+        redfinger.play("app", redfinger.VIDEO_BITRATE_HD, "", connectToken);
+        // 开启过期倒计时，到期输出 1
+        const remainMs = expireTs - Date.now();
+        tokenExpireTimer = setTimeout(() => {
+          // 可选：到期可以做断开连接、提示用户逻辑
+          redfinger.destroy();
+          alert("链接已过期");
+          // alert("访问令牌已到期");
+        }, remainMs);
+
+      } catch (e) {
+        console.warn(`play error: ${e}`);
+      }
+    }
+
+  </script>
+</body>
+
+</html>

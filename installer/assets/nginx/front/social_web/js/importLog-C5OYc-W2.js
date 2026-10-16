@@ -1,0 +1,1 @@
+const o={importLogTitle:"บันทึกการนำเข้า",userName:"สร้างโดย",result:"ผลลัพธ์",confirmExport:"ดาวน์โหลดบันทึกการนำเข้านี้?",failedReason:"สาเหตุที่ล้มเหลว"},t={importLog:o};export{t as default,o as importLog};

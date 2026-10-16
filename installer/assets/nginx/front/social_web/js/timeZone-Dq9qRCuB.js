@@ -1,0 +1,1 @@
+const e={title:"時區切換",groups:{americas:"美洲",europeWestCentral:"歐洲（西歐/中歐）",europeSouthNorthEast:"歐洲（南/北/東）",africa:"非洲",middleEast:"中東",asiaPacific:"亞洲及其他"}},t={timeZone:e};export{t as default,e as timeZone};

@@ -1,0 +1,1 @@
+const c="Product List",s="Sync",t="Failed to load product list",o="SSO apps synced successfully",n="Failed to sync SSO apps",d="Sync failed",e="No product data",a={title:c,sync:s,fetchFailed:t,syncSuccess:o,syncFailed:n,syncError:d,empty:e};export{a as default,e as empty,t as fetchFailed,s as sync,d as syncError,n as syncFailed,o as syncSuccess,c as title};

@@ -1,0 +1,262 @@
+/*!********************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ./node_modules/css-loader/dist/cjs.js??clonedRuleSet-32.use[1]!./node_modules/@vue/vue-loader-v15/lib/loaders/stylePostLoader.js!./node_modules/postcss-loader/dist/cjs.js??clonedRuleSet-32.use[2]!./node_modules/less-loader/dist/cjs.js??clonedRuleSet-32.use[3]!./node_modules/@vue/vue-loader-v15/lib/index.js??vue-loader-options!./src/views/equipment/device/work/index.vue?vue&type=style&index=0&id=1e66557c&scoped=true&lang=less ***!
+  \********************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************/
+/* stylelint-disable at-rule-empty-line-before,at-rule-name-space-after,at-rule-no-unknown */
+/* stylelint-disable no-duplicate-selectors */
+/* stylelint-disable */
+/* stylelint-disable declaration-bang-space-before,no-duplicate-selectors,string-no-newline */
+[data-v-1e66557c]:export {
+  color: #176ac5;
+}
+.ant-btn-primary[disabled][data-v-1e66557c] {
+  opacity: 0.5;
+  background: #176ac5;
+  color: #fff;
+  border-color: transparent;
+}
+.ant-btn[disabled][data-v-1e66557c] {
+  opacity: 0.4;
+}
+.ant-btn[ant-click-animating-without-extra-node][data-v-1e66557c]:after {
+  border: 0 none;
+  opacity: 0;
+  animation: none 0 ease 0 1 normal;
+  outline: none;
+}
+.ant-btn[ant-click-animating-without-extra-node][data-v-1e66557c]:after:after,
+.ant-btn[ant-click-animating-without-extra-node][data-v-1e66557c]:after:before {
+  outline: 0;
+}
+.ant-popover-inner-content[data-v-1e66557c] {
+  padding: 10px !important;
+}
+.ant-switch-handle[data-v-1e66557c]::before,
+.ant-switch-handle[data-v-1e66557c]::after {
+  box-shadow: none;
+}
+.ant-input[data-v-1e66557c]:focus {
+  box-shadow: none;
+}
+.ant-table-tbody > tr > td[data-v-1e66557c] {
+  padding: 12px 10px;
+}
+.ant-table-tbody > tr[data-v-1e66557c] {
+  height: 45px !important;
+}
+.ant-table-thead > tr > th[data-v-1e66557c] {
+  padding: 12px 10px;
+}
+.ant-table-thead > tr.ant-table-row-hover:not(.ant-table-expanded-row):not(.ant-table-row-selected) > td[data-v-1e66557c],
+.ant-table-tbody > tr.ant-table-row-hover:not(.ant-table-expanded-row):not(.ant-table-row-selected) > td[data-v-1e66557c],
+.ant-table-thead > tr:hover:not(.ant-table-expanded-row):not(.ant-table-row-selected) > td[data-v-1e66557c],
+.ant-table-tbody > tr:hover:not(.ant-table-expanded-row):not(.ant-table-row-selected) > td[data-v-1e66557c] {
+  background: #f9f9f9;
+  cursor: pointer;
+}
+.table-action[data-v-1e66557c] {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+.table-action .action-item[data-v-1e66557c] {
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+}
+.table-action .action-item .button[data-v-1e66557c] {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+  font-size: 18px;
+  color: #176ac5;
+}
+.table-action .action-item .button .icon[data-v-1e66557c] {
+  font-size: 16px;
+}
+.table-action .action-item .button[data-v-1e66557c]:hover,
+.table-action .action-item .button[data-v-1e66557c]:active {
+  border-radius: 2px;
+  background: #ededed;
+}
+.ant-modal-body[data-v-1e66557c] {
+  padding: 20px;
+  box-sizing: border-box;
+}
+.ant-modal-body .ant-spin-nested-loading[data-v-1e66557c] {
+  width: calc(100% + 40px);
+  margin-left: -20px;
+  margin-top: -20px;
+  margin-bottom: -20px;
+}
+.ant-modal-body .ant-spin-nested-loading .ant-spin-container .body[data-v-1e66557c] {
+  min-height: 200px;
+  max-height: 75vh;
+  overflow: auto;
+}
+.ant-modal-body .ant-spin-nested-loading .ant-spin-container .footer[data-v-1e66557c] {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 15px 20px;
+  box-sizing: border-box;
+  border-top: 1px solid #f6f6f6;
+}
+.ant-modal-body .ant-spin-nested-loading .ant-spin-container .footer .ant-btn[data-v-1e66557c] {
+  margin-left: 10px;
+}
+.ant-modal-body .ant-spin-nested-loading > div > .ant-spin[data-v-1e66557c] {
+  max-height: none;
+}
+.route-title[data-v-1e66557c] {
+  height: 25px;
+  line-height: 25px;
+  margin-top: 40px;
+  margin-bottom: 24px !important;
+  font-size: 18px !important;
+  font-family: PingFang-SC-Heavy, PingFang-SC !important;
+  font-weight: 800;
+  color: rgba(0, 0, 0, 0.85);
+}
+@font-face {
+  font-family: 'PingFang SC';
+  src: url(/mobile_web/static/fonts/PingFangSC-Regular.9915781e.ttf);
+  font-style: normal;
+  font-weight: 200;
+}
+html[data-v-1e66557c],
+body[data-v-1e66557c],
+div[data-v-1e66557c] {
+  font-family: 'PingFang SC' !important;
+  -webkit-font-smoothing: antialiased;
+}
+*[data-v-1e66557c] {
+  box-sizing: border-box;
+}
+ul[data-v-1e66557c],
+li[data-v-1e66557c] {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+[data-v-1e66557c]::-webkit-scrollbar {
+  height: 12px;
+  width: 12px;
+}
+[data-v-1e66557c]::-webkit-scrollbar-track-piece {
+  background: 0 0;
+}
+[data-v-1e66557c]::-webkit-scrollbar-track:hover {
+  background: rgba(79, 111, 127, 0.05);
+}
+[data-v-1e66557c]::-webkit-scrollbar-thumb {
+  background-clip: padding-box;
+  background-color: #b4c7d0;
+  border: 3px solid transparent;
+  border-radius: 5px;
+}
+.p_15[data-v-1e66557c] {
+  padding: 15px;
+}
+.ellipsis[data-v-1e66557c] {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.loading-container[data-v-1e66557c] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background-color: #f5f5f5;
+  z-index: 10;
+}
+.loading-container.loading-container--large .loading-spinner[data-v-1e66557c] {
+  width: 60px;
+  height: 60px;
+  border-width: 6px;
+  margin-bottom: 24px;
+}
+.loading-container.loading-container--large .loading-text[data-v-1e66557c] {
+  font-size: 18px;
+  color: rgba(0, 0, 0, 0.65);
+}
+.loading-container .loading-spinner[data-v-1e66557c] {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #f0f0f0;
+  border-top: 2px solid #1890ff;
+  border-radius: 50%;
+  animation: spin-1e66557c 0.8s linear infinite;
+  margin-bottom: 6px;
+}
+.loading-container .loading-text[data-v-1e66557c] {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+@keyframes spin-1e66557c {
+0% {
+    transform: rotate(0deg);
+}
+100% {
+    transform: rotate(360deg);
+}
+}
+.device-work[data-v-1e66557c] {
+  width: 100%;
+}
+.device-work .pagination[data-v-1e66557c] {
+  width: 100%;
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.device-work .table[data-v-1e66557c] {
+  width: 100%;
+  min-height: calc(600px - 54px);
+}
+.device-work .top[data-v-1e66557c] {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.device-work .top .left[data-v-1e66557c] {
+  font-size: 18px;
+  color: #000;
+}
+.device-work .top .right[data-v-1e66557c] {
+  display: flex;
+  align-items: center;
+}
+.device-work .top .right .icon-btn[data-v-1e66557c] {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 20px;
+  border: 1px solid #ebedf2;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.device-work .top .right .icon-btn.disabled[data-v-1e66557c] {
+  color: #bbb;
+  cursor: no-drop;
+}
+

@@ -1,0 +1,1 @@
+const e={title:"Time Zone Switch",groups:{americas:"Americas",europeWestCentral:"Europe (Western/Central)",europeSouthNorthEast:"Europe (Southern/Northern/Eastern)",africa:"Africa",middleEast:"Middle East",asiaPacific:"Asia & Others"}},t={timeZone:e};export{t as default,e as timeZone};

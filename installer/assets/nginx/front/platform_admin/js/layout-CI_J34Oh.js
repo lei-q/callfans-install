@@ -1,0 +1,1 @@
+import{_ as e}from"./bootstrap-BDKW1Q5_.js";import{q as r,l as t,b as c}from"../jse/index-index-Dj8yLCqT.js";const n={};function s(_,a){const o=r("router-view");return c(),t(o)}const p=e(n,[["render",s]]);export{p as default};

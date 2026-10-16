@@ -1,0 +1,1 @@
+const t={title:"Thông báo",markAllRead:"Đánh dấu tất cả đã đọc",clearAll:"Xóa tất cả",viewAll:"Xem tất cả thông báo >",tabs:{all:"Tất cả",alerts:"Cảnh báo",tasks:"Nhiệm vụ",devices:"Thiết bị"},time:{justNow:"vừa xong",minutesAgo:"{n} phút trước",hoursAgo:"{n} giờ trước",daysAgo:"{n} ngày trước"}},n={notification:t};export{n as default,t as notification};
