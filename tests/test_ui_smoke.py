@@ -480,3 +480,9 @@ def test_navigation_switches_pages(qapp):
     assert w.pages.currentWidget() is w.page_updates
     w.nav_buttons["home"].click()
     assert w.pages.currentWidget() is w.page_home
+
+
+def test_window_has_no_title(qapp):
+    """窗口标题栏留空（2026-10-16）：品牌与版本号在侧栏展示。"""
+    w = MainWindow(poll_enabled=False)
+    assert w.windowTitle() == ""

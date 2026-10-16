@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
     def __init__(self, poll_enabled: bool = True):
         super().__init__()
         from .. import __version__
-        self.setWindowTitle(f"助手管家 v{__version__}")
+        # 不设窗口标题（2026-10-16）：侧栏已有品牌与版本号，标题栏留空
         from .tray import _make_icon
         self.setWindowIcon(_make_icon())  # 任务栏/窗口图标（logo.svg）
         self.setStyleSheet(theme.STYLESHEET)
