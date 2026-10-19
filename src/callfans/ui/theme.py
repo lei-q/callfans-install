@@ -213,6 +213,20 @@ QPushButton#heroButton:pressed {{
 }}
 
 /* 状态胶囊 */
+QPushButton#bannerWarn {{
+    background: #FEF3C7;
+    color: #92400E;
+    border: 1px solid #FCD34D;
+    border-radius: 8px;
+    padding: 9px 14px;
+    text-align: left;
+    font-size: 13px;
+}}
+QPushButton#bannerWarn:hover {{
+    background: #FDE9C8;
+    border-color: #FBBF24;
+}}
+
 QLabel#pill {{
     border-radius: 11px;
     padding: 3px 12px;

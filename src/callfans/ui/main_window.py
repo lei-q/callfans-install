@@ -15,7 +15,7 @@ import threading
 from datetime import datetime
 
 from PySide6.QtCore import QSize, Qt, QObject, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
@@ -251,10 +251,12 @@ class MainWindow(QMainWindow):
         vsplit.setSizes([300, 240])
         layout.addWidget(vsplit, 1)
 
-        # ---- 首页 ----
+        # ---- 首页 / 功能组件页 ----
         self.page_home = self._build_home_page()
+        self.page_components = self._build_components_page()
         self.pages.addWidget(self.page_home)
         self.pages.addWidget(self.page_updates)
+        self.pages.addWidget(self.page_components)
         self.setCentralWidget(shell)
         self.show_page("home")
 
@@ -295,7 +297,12 @@ class MainWindow(QMainWindow):
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
         self.nav_buttons: dict[str, QPushButton] = {}
-        for key, text, icon_name in (("home", "首页", "home"), ("updates", "更新管理", "layers")):
+        nav_items = (
+            ("home", "首页", "home"),
+            ("updates", "更新管理", "layers"),
+            ("components", "功能组件", "package"),
+        )
+        for key, text, icon_name in nav_items:
             b = QPushButton(theme.icon(icon_name, "#94A3B8", checked_color="#FFFFFF"), f"  {text}")
             b.setObjectName("navButton")
             b.setCheckable(True)
@@ -366,6 +373,14 @@ class MainWindow(QMainWindow):
         h.addLayout(right)
         v.addWidget(hero)
 
+        # 组件异常提示条（默认隐藏；点按跳转功能组件页）
+        self.comp_banner = QPushButton()
+        self.comp_banner.setObjectName("bannerWarn")
+        self.comp_banner.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.comp_banner.clicked.connect(lambda: self.show_page("components"))
+        self.comp_banner.setVisible(False)
+        v.addWidget(self.comp_banner)
+
         # 数据卡片
         stats = QHBoxLayout()
         stats.setSpacing(12)
@@ -421,11 +436,141 @@ class MainWindow(QMainWindow):
         row.addWidget(card, 1)
         return value
 
+    # ---------- 功能组件页 ----------
+
+    def _build_components_page(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
+
+        head = QHBoxLayout()
+        title = QLabel("功能组件")
+        title.setObjectName("pageTitle")
+        head.addWidget(title)
+        head.addStretch(1)
+        self.btn_recover = QPushButton(theme.icon("refresh", "#FFFFFF"), "  一键恢复")
+        self.btn_recover.setObjectName("primary")
+        self.btn_recover.setIconSize(QSize(16, 16))
+        self.btn_recover.setToolTip("对异常/未创建的组件执行 compose up 拉起")
+        self.btn_recover.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_recover.clicked.connect(self.on_recover_clicked)
+        head.addWidget(self.btn_recover)
+        v.addLayout(head)
+
+        self.comp_table = QTableWidget(0, 4)
+        self.comp_table.setHorizontalHeaderLabels(["组件", "状态", "镜像", "端口"])
+        self.comp_table.setAlternatingRowColors(True)
+        self.comp_table.verticalHeader().setVisible(False)
+        self.comp_table.setShowGrid(False)
+        self.comp_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.comp_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        header = self.comp_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        v.addWidget(self.comp_table, 1)
+
+        hint = QLabel("「一键恢复」对状态异常的组件执行 docker compose up -d 拉起；"
+                      "已正常运行的组件不受影响。")
+        hint.setObjectName("statCaption")
+        v.addWidget(hint)
+        return page
+
+    def refresh_components(self) -> None:
+        """拉取组件列表并填表；只显示「一键恢复」可用性。"""
+        self._run(client.components, self._fill_components,
+                  lambda e: self.label_status.setText(f"组件状态获取失败: {e}"))
+
+    def _fill_components(self, result: dict) -> None:
+        comps = result.get("components") or []
+        self._components = comps
+        table = self.comp_table
+        table.setRowCount(len(comps))
+        for row, c in enumerate(comps):
+            for col, text in enumerate([
+                c.get("service", ""), c.get("status_text", c.get("status", "")),
+                c.get("image", ""), " ".join(c.get("ports") or []),
+            ]):
+                item = QTableWidgetItem(str(text))
+                item.setToolTip(str(text))
+                table.setItem(row, col, item)
+            # 状态列着色（色觉无障碍：文字本身已含语义）
+            status_item = table.item(row, 1)
+            color = (theme.DANGER if c.get("status") in ("unhealthy", "restarting", "exited")
+                     else (theme.WARNING if c.get("status") == "missing"
+                           else theme.SUCCESS))
+            status_item.setForeground(QColor(color))
+        table.resizeColumnsToContents()
+        abnormal = [c for c in comps if c.get("abnormal")]
+        if abnormal:
+            self.btn_recover.setText(f"  一键恢复（{len(abnormal)} 项异常）")
+            self.btn_recover.setEnabled(True)
+        else:
+            self.btn_recover.setText("  一键恢复")
+            self.btn_recover.setEnabled(bool(comps))  # 列表为空（不可用）时禁用
+
+    def on_recover_clicked(self) -> None:
+        """一键恢复：全部异常组件 compose up；进行中按钮禁用防重入。"""
+        comps = getattr(self, "_components", [])
+        abnormal = [c["service"] for c in comps if c.get("abnormal")]
+        if not abnormal:
+            self.log("组件全部正常，无需恢复")
+            return
+        ret = QMessageBox.question(
+            self, "一键恢复",
+            f"将对 {len(abnormal)} 个异常组件执行 docker compose up -d 拉起：\n"
+            f"{', '.join(abnormal)}\n\n是否继续？")
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        self.btn_recover.setEnabled(False)
+        self._busy = True
+        self.busy_changed.emit(True)
+        self.log(f"开始恢复组件（{len(abnormal)} 项）…")
+        self._run(lambda: client.components_recover(abnormal),
+                  self._recover_done, self._recover_failed)
+
+    def _recover_done(self, report: dict) -> None:
+        self._busy = False
+        self.busy_changed.emit(False)
+        recovered = report.get("recovered") or []
+        failed = report.get("failed") or []
+        errors = report.get("errors") or {}
+        for svc in recovered:
+            self.log(f"✓ {svc} 已恢复")
+        for svc in failed:
+            self.log(f"✗ {svc} 恢复失败: {errors.get(svc, '')}")
+        self.log(f"恢复完成: 成功 {len(recovered)}｜失败 {len(failed)}")
+        self.refresh_components()
+
+    def _recover_failed(self, error: str) -> None:
+        self._busy = False
+        self.busy_changed.emit(False)
+        self.log(f"恢复请求失败: {error}")
+        self.btn_recover.setEnabled(True)
+
+    def _update_component_banner(self, abnormal: list[str]) -> None:
+        """首页异常提示条：有异常组件时显示并跳转组件页。"""
+        banner = getattr(self, "comp_banner", None)
+        if banner is None:
+            return
+        if abnormal:
+            names = "、".join(abnormal[:5]) + ("…" if len(abnormal) > 5 else "")
+            banner.setText(f"⚠ {len(abnormal)} 个组件运行异常（{names}）— 点击查看")
+            banner.setVisible(True)
+        else:
+            banner.setVisible(False)
+
     def show_page(self, key: str) -> None:
-        page = self.page_home if key == "home" else self.page_updates
+        pages = {
+            "home": self.page_home,
+            "updates": self.page_updates,
+            "components": self.page_components,
+        }
+        page = pages.get(key, self.page_home)
         self.pages.setCurrentWidget(page)
         self.nav_buttons[key].setChecked(True)
-        if key == "updates" and getattr(self, "_sized_plan_id", None) is not None:
+        if key == "components":
+            self.refresh_components()
+        elif key == "updates" and getattr(self, "_sized_plan_id", None) is not None:
             # 表格可能在首页可见时填充（更新页隐藏、宽度未知），切页后按真实宽度铺满
             QTimer.singleShot(0, self._auto_fit_columns)
 
@@ -475,6 +620,7 @@ class MainWindow(QMainWindow):
             self._set_pill("服务运行中", "ok")
         if self._host_ip:
             self.label_platform_url.setText(platform_url(self._host_ip))
+        self._update_component_banner(status.get("components_abnormal") or [])
 
     # ---------- 数据 ----------
 

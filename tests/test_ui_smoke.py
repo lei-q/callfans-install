@@ -486,3 +486,74 @@ def test_window_has_no_title(qapp):
     """窗口标题栏留空（2026-10-16）：品牌与版本号在侧栏展示。"""
     w = MainWindow(poll_enabled=False)
     assert w.windowTitle() == ""
+
+
+# ---------- 功能组件页 / 一键恢复（2026-10-19）----------
+
+
+def test_components_page_and_recover(qapp, monkeypatch):
+    """组件页：填表、状态着色、异常计数入恢复按钮；一键恢复走 IPC。"""
+    import callfans.ui.main_window as mw
+
+    w = MainWindow(poll_enabled=False)
+
+    def run_sync(fn, on_done, on_fail=None):
+        try:
+            on_done(fn())
+        except Exception as e:  # noqa: BLE001
+            if on_fail:
+                on_fail(str(e))
+
+    monkeypatch.setattr(w, "_run", run_sync)  # 同步执行 IPC 并投递回调
+
+    comps = [
+        {"service": "redis", "status": "unhealthy", "status_text": "健康检查失败",
+         "image": "47.87.66.98/callfans/redis:5.0.14", "ports": ["6379:6379"],
+         "abnormal": True, "detail": ""},
+        {"service": "mysql", "status": "running", "status_text": "运行中",
+         "image": "47.87.66.98/callfans/mysql:8.0.24", "ports": ["3306:3306"],
+         "abnormal": False, "detail": ""},
+    ]
+    monkeypatch.setattr(mw.client, "components", lambda: {"components": comps})
+    w._fill_components({"components": comps})
+    assert w.comp_table.rowCount() == 2
+    assert w.comp_table.item(0, 0).text() == "redis"
+    assert w.comp_table.item(0, 1).text() == "健康检查失败"
+    assert "1 项异常" in w.btn_recover.text()
+
+    # 一键恢复：确认弹框 → IPC 恢复
+    sent: list[list[str]] = []
+
+    def fake_recover(svcs):
+        sent.append(svcs)
+        return {"recovered": svcs, "failed": [], "errors": {}}
+
+    monkeypatch.setattr(mw.client, "components_recover", fake_recover)
+    monkeypatch.setattr(mw.QMessageBox, "question",
+                        staticmethod(lambda *a, **k: mw.QMessageBox.StandardButton.Yes))
+    w.on_recover_clicked()
+    assert sent == [["redis"]]
+    assert "已恢复" in w.log_view.toPlainText()
+    assert "恢复完成: 成功 1" in w.log_view.toPlainText()
+
+
+def test_home_banner_on_abnormal_components(qapp):
+    """首页提示条：status 轮询带回异常清单 → 显示并点击跳组件页。"""
+    w = MainWindow(poll_enabled=False)
+    w._apply_state((
+        {"busy": False, "updating": False,
+         "components_abnormal": ["xray-core", "rabbitmq"]},
+        {"checked_at": None, "pending": []},
+    ))
+    assert w.comp_banner.isVisibleTo(w.page_home)
+    assert "2 个组件运行异常" in w.comp_banner.text()
+    assert "xray-core" in w.comp_banner.text()
+    w.comp_banner.click()
+    assert w.pages.currentWidget() is w.page_components
+
+    # 恢复正常 → 提示条隐藏
+    w._apply_state((
+        {"busy": False, "updating": False, "components_abnormal": []},
+        {"checked_at": None, "pending": []},
+    ))
+    assert not w.comp_banner.isVisibleTo(w.page_home)

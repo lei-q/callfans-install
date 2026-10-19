@@ -105,6 +105,40 @@ def update(items: list[str] | None = None) -> dict:
         client.close()
 
 
+def components() -> dict:
+    """功能组件列表及运行状态。"""
+    return _call("GET", "/api/v1/components", timeout=30)
+
+
+def components_recover(services: list[str] | None = None) -> dict:
+    """一键恢复异常组件（None=全部异常）。"""
+    import json as _json
+
+    body = _json.dumps({"services": services}).encode() if services is not None else None
+    try:
+        client = _connect(timeout=5.0)
+    except ServiceUnavailable:
+        raise
+    try:
+        headers = {"Content-Type": "application/json"} if body else None
+        resp = client.post("/api/v1/components/recover", content=body,
+                           headers=headers, timeout=600)
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            detail = e.response.json().get("detail", "")
+        except Exception:
+            pass
+        raise ServiceUnavailable(
+            f"/api/v1/components/recover -> {e.response.status_code}: {detail}") from e
+    except httpx.HTTPError as e:
+        raise ServiceUnavailable(f"/api/v1/components/recover 请求失败: {e}") from e
+    finally:
+        client.close()
+
+
 def pull_decision(action: str) -> dict:
     """pull 超时确认的决策（continue/abort）；返回后端回执（异步由 WS 事件收尾）。"""
     import json as _json

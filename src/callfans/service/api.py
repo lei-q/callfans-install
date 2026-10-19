@@ -259,7 +259,51 @@ def create_app(
             "host_ip": _deploy_host_ip(),
             "timezone": _deploy_env_value("TIMEZONE"),
             "sqlsync": StateStore(state_file()).get("sqlsync"),
+            "components_abnormal": await _components_abnormal_names(),
         }
+
+    async def _components_abnormal_names() -> list[str]:
+        """组件运行异常清单（首页提示用）；compose/docker 不可用返回空。"""
+        from ..core.components import list_components
+
+        try:
+            comps = await anyio.to_thread.run_sync(lambda: list_components(cfg))
+            return [c["service"] for c in comps if c["abnormal"]]
+        except Exception as e:
+            log.debug("组件状态采集失败（忽略）: %s", e)
+            return []
+
+    @app.get("/api/v1/components")
+    async def components() -> dict:
+        """功能组件列表及运行状态（compose 清单 + 容器 inspect）。"""
+        from ..core.components import list_components
+
+        return {"components": await anyio.to_thread.run_sync(
+            lambda: list_components(cfg))}
+
+    @app.post("/api/v1/components/recover")
+    async def components_recover(payload: dict | None = Body(default=None)) -> dict:
+        """一键恢复异常组件（compose up -d --no-deps）。与检查/更新互斥。"""
+        from ..core.components import recover_components
+
+        if state.updating or state.busy:
+            raise HTTPException(status_code=409, detail="check or update in progress")
+        services = None
+        if payload and isinstance(payload.get("services"), list):
+            services = [str(s) for s in payload["services"]]
+        if not services:
+            # 不指定 = 恢复全部异常组件
+            services = await _components_abnormal_names()
+        if not services:
+            return {"recovered": [], "failed": [], "errors": {}}
+        state.busy = True
+        try:
+            return await anyio.to_thread.run_sync(
+                lambda: recover_components(cfg, services, on_event=emit))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        finally:
+            state.busy = False
 
     @app.post("/api/v1/check")
     async def check() -> dict:
