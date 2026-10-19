@@ -1176,6 +1176,22 @@ class MainWindow(QMainWindow):
             self.refresh()
         elif event == "self_update_available":
             self._prompt_self_update(data)
+        elif event == "recover_progress":
+            stage = data.get("stage", "")
+            if stage == "tag_backfill":
+                self.log(f"· 已补齐 compose tag 变量: {', '.join(data.get('vars') or [])}")
+            elif stage == "mount_fix":
+                self.log(f"· 已修复挂载占位目录并拷回文件: {', '.join(data.get('files') or [])}")
+            elif stage == "start":
+                self._set_stage(f"恢复 {data.get('service', '')}")
+            elif stage == "done":
+                self._set_stage(None)
+                ok = data.get("ok")
+                svc = data.get("service", "")
+                if ok:
+                    self.log(f"✓ {svc} 恢复完成")
+                else:
+                    self.log(f"✗ {svc} 恢复失败: {data.get('error', '')}")
         elif event == "sqlsync_progress":
             stage = data.get("stage", "")
             if stage == "execute" and data.get("total"):

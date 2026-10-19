@@ -432,7 +432,7 @@ def test_components_endpoints(monkeypatch):
     ]
     monkeypatch.setattr(comp_mod, "list_components", lambda cfg, docker=None: fake_comps)
     monkeypatch.setattr(comp_mod, "recover_components",
-                        lambda cfg, svcs, docker=None, on_event=None:
+                        lambda cfg, svcs, docker=None, on_event=None, harbor=None:
                         {"recovered": svcs, "failed": [], "errors": {}})
 
     app = create_app(make_cfg(), checker=StubChecker(), token=TOKEN,

@@ -117,3 +117,101 @@ def test_compose_unavailable_returns_empty(tmp_path):
 
     cfg = make_cfg(compose_file=tmp_path / "nope.yml")
     assert list_components(cfg, BrokenDocker({})) == []
+
+
+def test_recover_backfills_missing_tag_vars(compose_file, tmp_path, monkeypatch):
+    """恢复前补齐缺失 tag 变量：本地无镜像时从 Harbor 取最新 tag 写入 .env。
+
+    2026-10-19 实测：首装后 .env 无 *_TAG，compose up 插值出空 tag →
+    invalid reference format。"""
+    from callfans.core.components import _backfill_missing_tag_vars
+    from tests.test_checker import mk
+
+    class FakeHarbor:
+        def repo_tags(self, repo):
+            # 只对 rpa 给版本 tag（其余仓库空 → 不写）
+            if repo == "callfans/callfans-rpa":
+                return [
+                    mk(repo, "202609070203-aaa", "2026-09-07T02:03:00Z"),
+                    mk(repo, "20260919024815-46a4ed8", "2026-09-19T02:48:15Z"),
+                ]
+            return []
+
+    monkeypatch.setattr("callfans.core.local.docker_images", lambda: [])
+    env_path = tmp_path / ".env"
+    env_path.write_text("HARBOR_REGISTRY=47.87.66.98\n", encoding="utf-8")
+
+    cfg = make_cfg(compose_file=compose_file)
+    # compose 模板里只有 rpa 用 ${VAR} 形式 tag（COMPOSE 里没有 → 造一个）
+    compose_file.write_text(COMPOSE + (
+        "  callfans-rpa:\n"
+        "    image: ${HARBOR_REGISTRY}/callfans/callfans-rpa:${CALLFANS_RPA_TAG}\n"
+    ), encoding="utf-8")
+
+    changed = _backfill_missing_tag_vars(cfg, compose_file, harbor=FakeHarbor())
+    assert changed == ["CALLFANS_RPA_TAG"]
+    from callfans.core.updaters.compose_env import read_env
+    assert read_env(env_path)["CALLFANS_RPA_TAG"] == "20260919024815-46a4ed8"  # 最新
+
+    # 已有值不覆盖（现场手动改过 tag 不动）
+    write_env = read_env(env_path)
+    from callfans.core.updaters.compose_env import write_env as _write
+    _write(env_path, {"CALLFANS_RPA_TAG": "202609070203-aaa"})
+    changed2 = _backfill_missing_tag_vars(cfg, compose_file, harbor=FakeHarbor())
+    assert changed2 == []
+    assert read_env(env_path)["CALLFANS_RPA_TAG"] == "202609070203-aaa"
+
+
+def test_fix_dir_placeholder_mounts(tmp_path):
+    """挂载占位目录修复：xray 三件套是目录 → 删占位、拷回种子；目录挂载不动。"""
+    import os
+    from callfans.core.components import _fix_dir_placeholder_mounts
+
+    deploy = tmp_path / "deploy"
+    (deploy / "server/xray").mkdir(parents=True)
+    compose = deploy / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  xray-core:\n    volumes:\n"
+        "      - ./server/xray/config.json:/etc/xray/config.json:rw\n"
+        "      - ./server/xray/geoip.dat:/usr/local/bin/geoip.dat\n"
+        "      - ./nginx/config:/etc/nginx/conf.d/\n",
+        encoding="utf-8",
+    )
+    # 现场状态：config.json 是目录占位（docker 自动建的），geoip.dat 正常
+    (deploy / "server/xray/config.json").mkdir()
+    (deploy / "server/xray/geoip.dat").write_text("geo data", encoding="utf-8")
+    # nginx/config 是合法目录挂载源（里面还有现场文件）
+    (deploy / "nginx/config").mkdir(parents=True)
+    (deploy / "nginx/config/live.conf").write_text("conf", encoding="utf-8")
+
+    # 安装包种子
+    app = tmp_path / "app"
+    (app / "assets/xray").mkdir(parents=True)
+    (app / "assets/xray/config.json").write_text("{}", encoding="utf-8")
+
+    cfg = make_cfg(compose_file=compose, app_root=app)
+    fixed = _fix_dir_placeholder_mounts(cfg, compose)
+    assert fixed == [str(deploy / "server/xray/config.json")]
+    # 占位目录变回文件（内容来自种子）
+    p = deploy / "server/xray/config.json"
+    assert p.is_file() and p.read_text(encoding="utf-8") == "{}"
+    # 正常文件与目录挂载原样
+    assert (deploy / "server/xray/geoip.dat").read_text(encoding="utf-8") == "geo data"
+    assert (deploy / "nginx/config/live.conf").exists()
+
+
+def test_fix_mounts_no_placeholder_noop(tmp_path):
+    """无占位（全是正常文件/目录）→ 什么都不动。"""
+    from callfans.core.components import _fix_dir_placeholder_mounts
+
+    deploy = tmp_path / "deploy"
+    (deploy / "server/xray").mkdir(parents=True)
+    compose = deploy / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  x:\n    volumes:\n"
+        "      - ./server/xray/config.json:/etc/xray/config.json\n",
+        encoding="utf-8",
+    )
+    (deploy / "server/xray/config.json").write_text("{}", encoding="utf-8")
+    assert _fix_dir_placeholder_mounts(make_cfg(compose_file=compose), compose) == []
+    assert (deploy / "server/xray/config.json").read_text(encoding="utf-8") == "{}"

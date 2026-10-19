@@ -299,7 +299,8 @@ def create_app(
         state.busy = True
         try:
             return await anyio.to_thread.run_sync(
-                lambda: recover_components(cfg, services, on_event=emit))
+                lambda: recover_components(
+                    cfg, services, on_event=emit, harbor=getattr(checker, "harbor", None)))
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
         finally:
