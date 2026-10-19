@@ -238,6 +238,7 @@ def _backfill_missing_tag_vars(cfg, compose_file: Path, harbor=None) -> list[str
     返回写入的变量名列表。
     """
     from .compare import is_version_tag, pick_latest, tag_timestamp, effective_time
+    from .local import DockerError as LocalDockerError
     from .local import docker_images, harbor_repo_of
     from .updaters.compose_env import (
         extract_tag_var, iter_image_templates, read_env, strip_tag, strip_vars, write_env,
@@ -258,8 +259,8 @@ def _backfill_missing_tag_vars(cfg, compose_file: Path, harbor=None) -> list[str
                 cur = local_map.get(repo)
                 if cur is None or (tag_timestamp(img.tag) or _MIN) > (tag_timestamp(cur) or _MIN):
                     local_map[repo] = img.tag
-    except DockerError:
-        pass  # docker 不可用 → 全靠 Harbor 兜底
+    except (DockerError, LocalDockerError, OSError):
+        pass  # docker 不可用 → 全靠 Harbor 兜底（CI 无 docker 环境也走到这）
 
     env_path = compose_file.parent / ".env"
     env = read_env(env_path)
