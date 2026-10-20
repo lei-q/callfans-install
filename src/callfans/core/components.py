@@ -193,22 +193,35 @@ def _fix_dir_placeholder_mounts(cfg, compose_file: Path) -> dict:
     #   目录占位是合法状态，不进修复也不告警）
     mounts = re.findall(
         r'^\s*-\s+(\./[^:\s]+)\s*:\s*(/[^:\s]*/?)(?::\w+)?\s*$', text, re.M)
-    # 种子源探测：{APP_ROOT}/assets/{nginx,xray}；无 APP_ROOT 时退化
+    # 种子源探测：{APP_ROOT}/assets/{nginx,xray,rpa,xxl_job}；无 APP_ROOT 时退化
     # {COMPOSE_FILE 同级的安装目录}（app/.env 与部署 compose 分离的场景）
-    seeds: list[Path] = []
+    # 映射：nginx/** → assets/nginx/**；server/xray|rpa|xxl_job/** → assets/<名>/**
+    seed_map = (
+        ("nginx", "nginx"),
+        ("server/xray", "xray"),
+        ("server/rpa", "rpa"),
+        ("server/xxl_job", "xxl_job"),
+    )
+    seeds: dict[str, Path] = {}
     if cfg.app_root:
         assets = Path(cfg.app_root) / "assets"
-        seeds = [assets / "nginx", assets / "xray"]
+        for prefix, name in seed_map:
+            seeds[prefix] = assets / name
 
     def _find_seed(rel_norm: str) -> Path | None:
         parts = Path(rel_norm).parts
-        for s in seeds:
-            if s.name == "nginx" and rel_norm.startswith("nginx/") and len(parts) > 1:
-                cand = s.joinpath(*parts[1:])
-                if cand.is_file():
-                    return cand
-            elif s.name == "xray" and rel_norm.startswith("server/xray/") and len(parts) > 2:
-                cand = s.joinpath(*parts[2:])
+        for prefix in seeds:
+            if rel_norm.startswith(prefix + "/"):
+                rest = list(parts[len(Path(prefix).parts):])
+                if not rest:
+                    continue
+                # rpa/xxl_job 的种子没有 config/ 这层（assets/rpa/config.yaml ↔
+                # 部署 server/rpa/config/config.yaml）
+                if prefix in ("server/rpa", "server/xxl_job") and rest and rest[0] == "config":
+                    rest = rest[1:]
+                if not rest:
+                    continue
+                cand = seeds[prefix].joinpath(*rest)
                 if cand.is_file():
                     return cand
         return None

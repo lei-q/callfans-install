@@ -278,3 +278,41 @@ def test_fix_mounts_no_placeholder_noop(tmp_path):
     assert _fix_dir_placeholder_mounts(make_cfg(compose_file=compose), compose) == {
         "fixed": [], "blocked": []}
     assert (deploy / "server/xray/config.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_fix_mounts_rpa_xxljob_seed_mapping(tmp_path):
+    """rpa / xxl_job 的占位修复：种子映射去掉 config/ 层。
+
+    compose 挂载 ./server/rpa/config/config.yaml、
+    ./server/xxl_job/config/application.properties；
+    种子为 assets/rpa/config.yaml、assets/xxl_job/application.properties。"""
+    from callfans.core.components import _fix_dir_placeholder_mounts
+
+    deploy = tmp_path / "deploy"
+    (deploy / "server/rpa/config").mkdir(parents=True)
+    (deploy / "server/xxl_job/config").mkdir(parents=True)
+    compose = deploy / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  rpa:\n    volumes:\n"
+        "      - ./server/rpa/config/config.yaml:/app/rpa/config.yaml\n"
+        "      - ./server/xxl_job/config/application.properties:/config/application.properties\n",
+        encoding="utf-8",
+    )
+    # 两处都是目录占位
+    (deploy / "server/rpa/config/config.yaml").mkdir()
+    (deploy / "server/xxl_job/config/application.properties").mkdir()
+
+    app = tmp_path / "app"
+    (app / "assets/rpa").mkdir(parents=True)
+    (app / "assets/rpa/config.yaml").write_text("mysql:", encoding="utf-8")
+    (app / "assets/xxl_job").mkdir(parents=True)
+    (app / "assets/xxl_job/application.properties").write_text("name=job", encoding="utf-8")
+
+    cfg = make_cfg(compose_file=compose, app_root=app)
+    result = _fix_dir_placeholder_mounts(cfg, compose)
+    assert result["blocked"] == []
+    assert len(result["fixed"]) == 2
+    p1 = deploy / "server/rpa/config/config.yaml"
+    p2 = deploy / "server/xxl_job/config/application.properties"
+    assert p1.is_file() and p1.read_text(encoding="utf-8") == "mysql:"
+    assert p2.is_file() and p2.read_text(encoding="utf-8") == "name=job"

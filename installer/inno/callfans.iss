@@ -10,7 +10,7 @@
 ;       事件处理器（InitializeWizard / CurPageChanged / CurStepChanged）之前
 
 #define MyAppName "callfans"
-#define MyAppVersion "0.9.2"
+#define MyAppVersion "0.9.3"
 #define MyAppExeName "callfans-ui.exe"
 
 [Setup]
@@ -35,9 +35,11 @@ Source: "..\..\dist\callfans-cli\*"; DestDir: "{app}\cli"; Flags: recursesubdirs
 Source: "..\assets\docker-compose.yml"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\.env"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\assets\get-ip.ps1"; DestDir: "{app}\assets"; Flags: ignoreversion
-; nginx / xray 启动数据：整树打包（含空目录，如 nginx\logs），安装时按缺失补齐
+; nginx / xray / rpa / xxl_job 启动数据：整树打包（含空目录，如 nginx\logs），安装时按缺失补齐
 Source: "..\assets\nginx\*"; DestDir: "{app}\assets\nginx"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "..\assets\xray\*"; DestDir: "{app}\assets\xray"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\assets\rpa\*"; DestDir: "{app}\assets\rpa"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\assets\xxl_job\*"; DestDir: "{app}\assets\xxl_job"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "..\..\.env.example"; DestDir: "{app}"; DestName: ".env.example"; Flags: ignoreversion
 
 [Registry]
@@ -380,12 +382,16 @@ begin
     FileCopy(ComposeSrc, ComposeDst, False);
   end;
 
-  // nginx 启动数据 → 平台根目录\nginx；xray 启动数据 → 平台根目录\server\xray
+  // nginx 启动数据 → 平台根目录\nginx；xray / rpa / xxl_job → 平台根目录\server\…
   // （缺失才补：现场证书 / 站点 / 配置不被覆盖）
   CopyTreeSkipExisting(ExpandConstant('{app}\assets\nginx'),
                        AddBackslash(DeployDir) + 'nginx');
   CopyTreeSkipExisting(ExpandConstant('{app}\assets\xray'),
                        AddBackslash(DeployDir) + 'server\xray');
+  CopyTreeSkipExisting(ExpandConstant('{app}\assets\rpa'),
+                       AddBackslash(DeployDir) + 'server\rpa\config');
+  CopyTreeSkipExisting(ExpandConstant('{app}\assets\xxl_job'),
+                       AddBackslash(DeployDir) + 'server\xxl_job\config');
 
   // 部署 .env：不存在则从模板生成（存在则保留现场改过的密码等）
   DeployEnv := AddBackslash(DeployDir) + '.env';
