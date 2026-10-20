@@ -166,7 +166,7 @@ def list_components(cfg, docker: DockerCLI | None = None) -> list[dict]:
     return [c.to_dict() for c in comps]
 
 
-def _fix_dir_placeholder_mounts(cfg, compose_file: Path) -> list[str]:
+def _fix_dir_placeholder_mounts(cfg, compose_file: Path) -> dict:
     """修复「挂载源是目录占位」的文件挂载（2026-10-19 实测 xray 三件套中招）。
 
     现象：compose 文件挂载（./server/xray/config.json:/etc/xray/config.json）
@@ -175,21 +175,26 @@ def _fix_dir_placeholder_mounts(cfg, compose_file: Path) -> list[str]:
 
     修复：检测 compose 全部「宿主侧相对路径 → 容器侧文件」的挂载，宿主侧
     已是目录的，删目录占位并从安装包 assets 对应文件拷回（nginx →
-    assets/nginx，server/* → assets/xray，其余来源无种子 → 仅删占位并告警）。
-    返回修复的挂载源列表。
+    assets/nginx，server/xray → assets/xray）。
+    返回 {"fixed": [...], "blocked": [{"path", "reason"}]}——blocked 带
+    原因（找不到种子/删除失败），供恢复错误与 UI 提示。
     """
     import re
     import shutil
 
+    result: dict = {"fixed": [], "blocked": []}
     try:
         text = read_text_loose(compose_file)
     except OSError:
-        return []
+        return result
     deploy_dir = compose_file.parent
     # 相对路径文件挂载：- ./server/xray/config.json:/etc/xray/config.json[:rw]
+    # （容器侧尾带 / 的是目录挂载源，如 ./nginx/config:/etc/nginx/conf.d/，
+    #   目录占位是合法状态，不进修复也不告警）
     mounts = re.findall(
-        r'^\s*-\s+(\./[^:\s]+)\s*:\s*/[^:\s]+(?::\w+)?\s*$', text, re.M)
-    # 安装包种子源（assets/nginx → 部署根/nginx，assets/xray → 部署根/server/xray）
+        r'^\s*-\s+(\./[^:\s]+)\s*:\s*(/[^:\s]*/?)(?::\w+)?\s*$', text, re.M)
+    # 种子源探测：{APP_ROOT}/assets/{nginx,xray}；无 APP_ROOT 时退化
+    # {COMPOSE_FILE 同级的安装目录}（app/.env 与部署 compose 分离的场景）
     seeds: list[Path] = []
     if cfg.app_root:
         assets = Path(cfg.app_root) / "assets"
@@ -208,26 +213,33 @@ def _fix_dir_placeholder_mounts(cfg, compose_file: Path) -> list[str]:
                     return cand
         return None
 
-    fixed: list[str] = []
-    for m in mounts:
+    for m, container_side in mounts:
         if not str(m).startswith("./"):
             continue  # 只处理相对挂载（部署目录内）
+        if container_side.endswith("/"):
+            continue  # 目录挂载（容器侧以 / 结尾）：目录占位合法，跳过
         rel_norm = str(m)[2:]
         target = deploy_dir / Path(rel_norm)
         if not (target.exists() and target.is_dir()):
             continue  # 只处理「应为文件却成了目录」的占位
         seed = _find_seed(rel_norm)
         if seed is None:
-            # 无种子（目录挂载如 ./nginx/config 也走不到这——种子映射只命中
-            # 文件路径；真无种子的文件挂载不自动删，避免破坏现场数据）
-            log.warning("挂载源 %s 是目录占位但找不到安装包种子文件，未自动修复", target)
+            reason = ("未配置 APP_ROOT（应用 .env 缺失），无法定位安装包种子文件"
+                      if not cfg.app_root else "安装包内无对应种子文件")
+            log.warning("挂载占位 %s 未修复: %s", target, reason)
+            result["blocked"].append({"path": str(target), "reason": reason})
             continue
-        shutil.rmtree(target)  # 占位目录（docker 自动创建的空目录）
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(seed, target)
-        log.info("已修复挂载占位目录并拷回种子文件: %s（源 %s）", target, seed)
-        fixed.append(str(target))
-    return fixed
+        try:
+            shutil.rmtree(target)  # 占位目录（docker 自动创建的目录）
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(seed, target)
+            log.info("已修复挂载占位目录并拷回种子文件: %s（源 %s）", target, seed)
+            result["fixed"].append(str(target))
+        except OSError as e:
+            log.error("挂载占位 %s 修复失败: %s", target, e)
+            result["blocked"].append(
+                {"path": str(target), "reason": f"删除/拷贝失败: {e}"})
+    return result
 
 
 def _backfill_missing_tag_vars(cfg, compose_file: Path, harbor=None) -> list[str]:
@@ -310,10 +322,12 @@ def recover_components(cfg, services: list[str], docker: DockerCLI | None = None
         on_event("recover_progress", {"service": "(compose)", "stage": "tag_backfill",
                                       "vars": backfilled})
 
-    fixed_mounts = _fix_dir_placeholder_mounts(cfg, compose_file)
-    if fixed_mounts and on_event:
-        on_event("recover_progress", {"service": "(mounts)", "stage": "mount_fix",
-                                      "files": fixed_mounts})
+    mounts = _fix_dir_placeholder_mounts(cfg, compose_file)
+    if on_event and (mounts.get("fixed") or mounts.get("blocked")):
+        on_event("recover_progress", {"service": "(mounts)", "stage": "mount_fix", **mounts})
+    # 占位存在但修不了（无 APP_ROOT / 无种子 / 删除失败）→ 带具体原因，
+    # 否则用户只看到 docker 的 "not a directory" 无从下手（2026-10-19 实测）
+    blocked = "; ".join(f'{b["path"]}: {b["reason"]}' for b in mounts.get("blocked") or [])
 
     known = {c["service"] for c in list_components(cfg, docker)}
     recovered: list[str] = []
@@ -333,8 +347,12 @@ def recover_components(cfg, services: list[str], docker: DockerCLI | None = None
                 on_event("recover_progress", {"service": svc, "stage": "done", "ok": True})
         except DockerError as e:
             failed.append(svc)
-            errors[svc] = str(e)
+            hint = ""
+            if "not a directory" in str(e) and blocked:
+                hint = (f"｜挂载占位未自动修复（{blocked}）。手动处理：删除占位目录后"
+                        "从安装目录 assets/xray 拷回对应文件再恢复")
+            errors[svc] = str(e) + hint
             if on_event:
                 on_event("recover_progress", {"service": svc, "stage": "done", "ok": False,
-                                              "error": str(e)})
+                                              "error": errors[svc]})
     return {"recovered": recovered, "failed": failed, "errors": errors}

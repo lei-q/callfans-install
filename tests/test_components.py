@@ -190,14 +190,76 @@ def test_fix_dir_placeholder_mounts(tmp_path):
     (app / "assets/xray/config.json").write_text("{}", encoding="utf-8")
 
     cfg = make_cfg(compose_file=compose, app_root=app)
-    fixed = _fix_dir_placeholder_mounts(cfg, compose)
-    assert fixed == [str(deploy / "server/xray/config.json")]
+    result = _fix_dir_placeholder_mounts(cfg, compose)
+    assert result["fixed"] == [str(deploy / "server/xray/config.json")]
+    assert result["blocked"] == []
     # 占位目录变回文件（内容来自种子）
     p = deploy / "server/xray/config.json"
     assert p.is_file() and p.read_text(encoding="utf-8") == "{}"
     # 正常文件与目录挂载原样
     assert (deploy / "server/xray/geoip.dat").read_text(encoding="utf-8") == "geo data"
     assert (deploy / "nginx/config/live.conf").exists()
+
+
+def test_fix_mounts_blocked_reports_reason(tmp_path):
+    """占位存在但无种子/无 APP_ROOT → blocked 带原因（2026-10-19 实测现场）。"""
+    from callfans.core.components import _fix_dir_placeholder_mounts
+
+    deploy = tmp_path / "deploy"
+    (deploy / "server/xray").mkdir(parents=True)
+    compose = deploy / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  x:\n    volumes:\n"
+        "      - ./server/xray/config.json:/etc/xray/config.json\n",
+        encoding="utf-8",
+    )
+    (deploy / "server/xray/config.json").mkdir()  # 目录占位
+
+    # 无 APP_ROOT：blocked，占位不动
+    cfg = make_cfg(compose_file=compose)  # app_root=None
+    result = _fix_dir_placeholder_mounts(cfg, compose)
+    assert result["fixed"] == []
+    assert len(result["blocked"]) == 1
+    assert "APP_ROOT" in result["blocked"][0]["reason"]
+    assert (deploy / "server/xray/config.json").is_dir()  # 未动
+
+    # 有 APP_ROOT 但种子缺失：blocked 带无种子原因
+    app = tmp_path / "app"
+    (app / "assets/xray").mkdir(parents=True)  # 空：无 config.json 种子
+    cfg2 = make_cfg(compose_file=compose, app_root=app)
+    result2 = _fix_dir_placeholder_mounts(cfg2, compose)
+    assert result2["fixed"] == []
+    assert "种子" in result2["blocked"][0]["reason"]
+
+
+def test_recover_not_a_directory_hint(tmp_path):
+    """恢复撞 not a directory 且占位未修 → 错误带手动处理指引。"""
+    fake = FakeDocker({"redis": {"Running": True}})
+    fake.up_error = {}
+
+    class MountErrFake(FakeDocker):
+        def compose_up(self, f, service, force_recreate=False, on_line=None):
+            if service == "xray-core":
+                raise DockerError(
+                    "nt src=/run/desktop/.../config.json: not a directory: "
+                    "Are you trying to mount a directory onto a file (or vice-versa)?")
+            super().compose_up(f, service, force_recreate, on_line)
+
+    deploy = tmp_path / "deploy"
+    (deploy / "server/xray").mkdir(parents=True)
+    compose = deploy / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  xray-core:\n    volumes:\n"
+        "      - ./server/xray/config.json:/etc/xray/config.json\n",
+        encoding="utf-8",
+    )
+    (deploy / "server/xray/config.json").mkdir()  # 目录占位
+    cfg = make_cfg(compose_file=compose)  # 无 app_root → 占位修不了
+
+    report = recover_components(cfg, ["xray-core"], docker=MountErrFake({}))
+    assert report["recovered"] == []
+    assert "手动处理" in report["errors"]["xray-core"]
+    assert "APP_ROOT" in report["errors"]["xray-core"]
 
 
 def test_fix_mounts_no_placeholder_noop(tmp_path):
@@ -213,5 +275,6 @@ def test_fix_mounts_no_placeholder_noop(tmp_path):
         encoding="utf-8",
     )
     (deploy / "server/xray/config.json").write_text("{}", encoding="utf-8")
-    assert _fix_dir_placeholder_mounts(make_cfg(compose_file=compose), compose) == []
+    assert _fix_dir_placeholder_mounts(make_cfg(compose_file=compose), compose) == {
+        "fixed": [], "blocked": []}
     assert (deploy / "server/xray/config.json").read_text(encoding="utf-8") == "{}"

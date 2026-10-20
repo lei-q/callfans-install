@@ -1181,7 +1181,10 @@ class MainWindow(QMainWindow):
             if stage == "tag_backfill":
                 self.log(f"· 已补齐 compose tag 变量: {', '.join(data.get('vars') or [])}")
             elif stage == "mount_fix":
-                self.log(f"· 已修复挂载占位目录并拷回文件: {', '.join(data.get('files') or [])}")
+                if data.get("fixed"):
+                    self.log(f"· 已修复挂载占位目录并拷回文件: {', '.join(data['fixed'])}")
+                for b in data.get("blocked") or []:
+                    self.log(f"⚠ 挂载占位未能自动修复 {b.get('path')}: {b.get('reason')}")
             elif stage == "start":
                 self._set_stage(f"恢复 {data.get('service', '')}")
             elif stage == "done":
