@@ -170,43 +170,40 @@ def _fix_dir_placeholder_mounts(cfg, compose_file: Path) -> dict:
     """修复「挂载源是目录占位」的文件挂载（2026-10-19 实测 xray 三件套中招）。
 
     现象：compose 文件挂载（./server/xray/config.json:/etc/xray/config.json）
-    的宿主侧不存在时，Docker Desktop 自动创建同名目录占位；此后文件永远
-    挂不进去（not a directory: mount onto a file）。
+    的宿主侧不存在时，Docker 的 create_host_path 自动创建同名**目录**占位；
+    此后文件永远挂不进去（not a directory: mount onto a file）。
 
-    修复：检测 compose 全部「宿主侧相对路径 → 容器侧文件」的挂载，宿主侧
-    已是目录的，删目录占位并从安装包 assets 对应文件拷回（nginx →
-    assets/nginx，server/xray → assets/xray）。
-    返回 {"fixed": [...], "blocked": [{"path", "reason"}]}——blocked 带
-    原因（找不到种子/删除失败），供恢复错误与 UI 提示。
+    判据（2026-10-20 修正）：不用「宿主侧是目录」判占位——数据目录挂载
+    （./mysql/data:/var/lib/mysql）宿主侧本来就应是目录，会大面积误报
+    （v0.9.2 实测 21 条误报）。改用**种子对位**：只有能在安装包 assets 里
+    对上种子的挂载（nginx/xray/rpa/xxl_job 启动数据）才谈「应为文件」，
+    其余挂载一律不看。对上种子的路径：是目录 → 占位，删+拷；不存在 →
+    顺带补种子；是文件 → 不动（现场配置不覆盖）。
+    返回 {"fixed": [...], "blocked": [{"path", "reason"}]}。
     """
     import re
     import shutil
 
     result: dict = {"fixed": [], "blocked": []}
+    if not cfg.app_root:
+        return result  # 无安装目录信息，无从定位种子
     try:
         text = read_text_loose(compose_file)
     except OSError:
         return result
     deploy_dir = compose_file.parent
-    # 相对路径文件挂载：- ./server/xray/config.json:/etc/xray/config.json[:rw]
-    # （容器侧尾带 / 的是目录挂载源，如 ./nginx/config:/etc/nginx/conf.d/，
-    #   目录占位是合法状态，不进修复也不告警）
+    # 相对路径挂载：- ./server/xray/config.json:/etc/xray/config.json[:rw]
     mounts = re.findall(
-        r'^\s*-\s+(\./[^:\s]+)\s*:\s*(/[^:\s]*/?)(?::\w+)?\s*$', text, re.M)
-    # 种子源探测：{APP_ROOT}/assets/{nginx,xray,rpa,xxl_job}；无 APP_ROOT 时退化
-    # {COMPOSE_FILE 同级的安装目录}（app/.env 与部署 compose 分离的场景）
-    # 映射：nginx/** → assets/nginx/**；server/xray|rpa|xxl_job/** → assets/<名>/**
+        r'^\s*-\s+(\./[^:\s]+)\s*:\s*/[^:\s]+(?::\w+)?\s*$', text, re.M)
+    # 种子映射：nginx/** → assets/nginx/**；server/xray|rpa|xxl_job/** → assets/<名>/**
     seed_map = (
         ("nginx", "nginx"),
         ("server/xray", "xray"),
         ("server/rpa", "rpa"),
         ("server/xxl_job", "xxl_job"),
     )
-    seeds: dict[str, Path] = {}
-    if cfg.app_root:
-        assets = Path(cfg.app_root) / "assets"
-        for prefix, name in seed_map:
-            seeds[prefix] = assets / name
+    assets = Path(cfg.app_root) / "assets"
+    seeds = {prefix: assets / name for prefix, name in seed_map}
 
     def _find_seed(rel_norm: str) -> Path | None:
         parts = Path(rel_norm).parts
@@ -226,32 +223,25 @@ def _fix_dir_placeholder_mounts(cfg, compose_file: Path) -> dict:
                     return cand
         return None
 
-    for m, container_side in mounts:
-        if not str(m).startswith("./"):
-            continue  # 只处理相对挂载（部署目录内）
-        if container_side.endswith("/"):
-            continue  # 目录挂载（容器侧以 / 结尾）：目录占位合法，跳过
+    for m in mounts:
         rel_norm = str(m)[2:]
-        target = deploy_dir / Path(rel_norm)
-        if not (target.exists() and target.is_dir()):
-            continue  # 只处理「应为文件却成了目录」的占位
         seed = _find_seed(rel_norm)
         if seed is None:
-            reason = ("未配置 APP_ROOT（应用 .env 缺失），无法定位安装包种子文件"
-                      if not cfg.app_root else "安装包内无对应种子文件")
-            log.warning("挂载占位 %s 未修复: %s", target, reason)
-            result["blocked"].append({"path": str(target), "reason": reason})
-            continue
+            continue  # 非安装包管理的挂载（mysql/redis 数据目录等）：不看、不报
+        target = deploy_dir / Path(rel_norm)
+        if target.is_file():
+            continue  # 已是文件 → 正常，不动（现场改过的配置不覆盖）
         try:
-            shutil.rmtree(target)  # 占位目录（docker 自动创建的目录）
+            if target.is_dir():
+                shutil.rmtree(target)  # 占位目录（docker create_host_path 建的）
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(seed, target)
-            log.info("已修复挂载占位目录并拷回种子文件: %s（源 %s）", target, seed)
+            log.info("已修复/补齐挂载源文件: %s（源 %s）", target, seed)
             result["fixed"].append(str(target))
         except OSError as e:
-            log.error("挂载占位 %s 修复失败: %s", target, e)
-            result["blocked"].append(
-                {"path": str(target), "reason": f"删除/拷贝失败: {e}"})
+            log.error("挂载源 %s 修复失败: %s", target, e)
+            reason = f"删除占位/拷贝失败: {e}"
+            result["blocked"].append({"path": str(target), "reason": reason})
     return result
 
 
