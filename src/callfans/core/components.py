@@ -344,7 +344,10 @@ def recover_components(cfg, services: list[str], docker: DockerCLI | None = None
         if on_event:
             on_event("recover_progress", {"service": svc, "stage": "start"})
         try:
-            docker.compose_up(compose_file, svc)
+            # --force-recreate：占位目录时期创建的容器挂载类型已按目录固化，
+            # 宿主侧修回文件后不重建则永远报 not a directory（2026-10-20 实测
+            # xray-rest：宿主三件套全是文件仍失败，根因在旧容器沿用错误挂载）
+            docker.compose_up(compose_file, svc, force_recreate=True)
             recovered.append(svc)
             if on_event:
                 on_event("recover_progress", {"service": svc, "stage": "done", "ok": True})
