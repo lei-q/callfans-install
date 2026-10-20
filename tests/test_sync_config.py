@@ -42,13 +42,13 @@ def test_multi_db_mode_when_no_cloud_db_name(monkeypatch):
 
 
 def test_from_env_local_account_defaults(monkeypatch):
-    """B 库账号可不填：默认 127.0.0.1 / root / callfans@123。"""
+    """B 库账号可不填：默认 127.0.0.1 / root / 123456（与主配置及部署模板一致）。"""
     monkeypatch.setenv("CLOUD_DB_NAME", "std")
     for k in ("MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_PORT"):
         monkeypatch.delenv(k, raising=False)
     cfg = CloudSyncConfig.from_env()
     assert (cfg.local.host, cfg.local.port, cfg.local.user,
-            cfg.local.password) == ("127.0.0.1", 3306, "root", "callfans@123")
+            cfg.local.password) == ("127.0.0.1", 3306, "root", "123456")
 
 
 def test_from_env_policy_overrides(monkeypatch):
