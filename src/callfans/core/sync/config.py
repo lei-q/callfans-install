@@ -103,7 +103,7 @@ _CLOUD_DEFAULT = DbTarget(
 # B 库账号默认值（与主配置一致，.env 可不填）
 _DEFAULT_MYSQL_HOST = "127.0.0.1"
 _DEFAULT_MYSQL_USER = "root"
-_DEFAULT_MYSQL_PASSWORD = "callfans@123"
+_DEFAULT_MYSQL_PASSWORD = "123456"
 
 
 @dataclass
