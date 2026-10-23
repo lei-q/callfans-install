@@ -8,12 +8,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .sqlgen import sql_literal as _literal  # 兼容既有测试引用
+
+log = logging.getLogger(__name__)
 
 _IDENT_RE = re.compile(r"^[A-Za-z0-9_$-]+$")  # 库名含连字符（callfans-standard）
 _BATCH = 500
@@ -65,6 +68,10 @@ class BackupManager:
             for db, table in targets:
                 t = _ident(table)
                 d = _ident(db) if db else ""
+                if d and not self._table_exists(conn, d, t):
+                    # 新建库/新建表无数据可保护；G1 备份只针对已存在对象
+                    log.info("跳过备份（库/表尚不存在）: %s.%s", d, t)
+                    continue
                 fq = f"`{d}`.`{t}`" if d else f"`{t}`"
                 bak = f"_cf_bak_{run_id[:8]}_{t}"[:64]
                 bak_fq = f"`{d}`.`{bak}`" if d else f"`{bak}`"
@@ -82,6 +89,17 @@ class BackupManager:
             conn.close()
         result.dump_dir = dump_dir
         return result
+
+    @staticmethod
+    def _table_exists(conn, db: str, table: str) -> bool:
+        """目标表是否存在（库不存在时同样返回 False，不抛 1049）。"""
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = %s AND table_name = %s LIMIT 1",
+                (db, table),
+            )
+            return cur.fetchone() is not None
 
     def _dump_table(self, conn, db: str, table: str, path: Path) -> None:
         fq = f"`{db}`.`{table}`" if db else f"`{table}`"

@@ -81,6 +81,57 @@ class TestGuards:
         assert "G5：云库表为空" in plan.report_text()
 
 
+def test_missing_cloud_db_falls_back_and_mirrors_empty_db(monkeypatch):
+    """配置的单库云端不存在 → 回退多库发现；B 缺空库也建（2026-10-23）。"""
+    import callfans.core.sync.plan as plan_mod
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget
+
+    cloud, local = object(), object()
+    discovered = ["callfans-standard", "callfans_job"]
+    monkeypatch.setattr(plan_mod, "database_exists", lambda e, db: False)
+    monkeypatch.setattr(
+        plan_mod, "list_databases",
+        lambda e, extra=None: discovered if e is cloud else [],
+    )
+    monkeypatch.setattr(plan_mod, "tables_in", lambda e, db: set())
+
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("c", 1, "u", "p", "callfans_standard"),
+        local=DbTarget("l", 2, "u", "p", ""),
+    )
+    plan = plan_mod.build_plan(cfg, cloud, local, [TableRule(name="t")])
+
+    assert plan.databases == discovered
+    assert plan.notes and "callfans_standard" in plan.notes[0]
+    assert "提示: 云端不存在配置的库" in plan.report_text()
+    created = [c.table for c in plan.schema_changes if c.kind == "create_database"]
+    assert created == discovered                      # 空库也镜像
+    assert plan.statement_count == 2
+
+
+def test_existing_cloud_db_stays_single(monkeypatch):
+    import callfans.core.sync.plan as plan_mod
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget
+
+    cloud, local = object(), object()
+    monkeypatch.setattr(plan_mod, "database_exists", lambda e, db: True)
+    monkeypatch.setattr(
+        plan_mod, "list_databases",
+        lambda e, extra=None: ["std", "other"] if e is cloud else [],
+    )
+    monkeypatch.setattr(plan_mod, "tables_in", lambda e, db: set())
+
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("c", 1, "u", "p", "std"),
+        local=DbTarget("l", 2, "u", "p", ""),
+    )
+    plan = plan_mod.build_plan(cfg, cloud, local, [TableRule(name="t")])
+
+    assert plan.databases == ["std"]
+    assert not plan.notes
+    assert [c.table for c in plan.schema_changes if c.kind == "create_database"] == ["std"]
+
+
 def test_checksum_covers_databases():
     """校验和包含库与表集合（多库维度）。"""
     from callfans.core.sync.plan import _checksum

@@ -67,6 +67,28 @@ def test_backup_creates_bak_and_dump(tmp_path):
     assert "'a'" in dump and "NULL" in dump
 
 
+def test_backup_skips_missing_db_or_table(tmp_path):
+    """新建库/新建表无数据可备份：G1 不应因 1049/1146 挡住自动建库。"""
+    class MissingTableConn(FakeConn):
+        def cursor(self):
+            conn = self
+
+            class Cur(FakeCursor):
+                def fetchone(self):
+                    return None  # information_schema 查不到目标表/库
+
+            return Cur(conn)
+
+    conn = MissingTableConn()
+    mgr = BackupManager(lambda: conn, tmp_path)
+
+    result = mgr.backup([("new_db", "new_table")], run_id="20261023120000")
+
+    assert result.tables == {}
+    assert not any("CREATE TABLE" in s and "LIKE" in s for s in conn.statements)
+    assert any("information_schema.tables" in s for s in conn.statements)
+
+
 def test_backup_rejects_bad_identifier(tmp_path):
     mgr = BackupManager(lambda: FakeConn(), tmp_path)
     with pytest.raises(BackupError, match="非法表名"):

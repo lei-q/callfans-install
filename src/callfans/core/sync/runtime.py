@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from ...paths import state_file
@@ -56,7 +57,9 @@ class SqlSyncRuntime:
     @property
     def cloud(self):
         if self._cloud is None:
-            self._cloud = engine_for(self.cfg.cloud)
+            # 云端连接始终不选库：配置的库可能不存在（1049 Unknown database），
+            # 或本就走多库发现；所有查询均使用全限定名（db.table）。
+            self._cloud = engine_for(replace(self.cfg.cloud, database=""))
         return self._cloud
 
     @property

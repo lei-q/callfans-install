@@ -161,7 +161,8 @@ CLOUD_DB_HOST=cloud-mysql.example.com
 CLOUD_DB_PORT=3306
 CLOUD_DB_USER=callfans_ro
 CLOUD_DB_PASSWORD=***
-CLOUD_DB_NAME=callfans_standard
+# 多库模式为默认（不配此键）；单库才配，库名以云端实际为准（连字符）
+# CLOUD_DB_NAME=callfans-standard
 CLOUD_DB_CA=/path/to/ca.pem        # TLS
 LOCAL_DB_HOST=127.0.0.1            # B 库（沿用 MYSQL_* 或独立段，待 Q4）
 SQLSYNC_INTERVAL_HOURS=6

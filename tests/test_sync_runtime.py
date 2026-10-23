@@ -146,6 +146,18 @@ class TestRuntime:
         rt.build = lambda: fake_plan  # 注入计划
         return rt, state
 
+    def test_cloud_engine_never_selects_configured_db(self):
+        """配置库不存在时不能在建连阶段 1049：云端连接不选默认库。"""
+        from callfans.core.sync.config import CloudSyncConfig, DbTarget
+        from callfans.core.sync.runtime import SqlSyncRuntime
+
+        cfg = CloudSyncConfig(
+            cloud=DbTarget("h", 3306, "u", "p", "callfans_standard"),
+            local=DbTarget("h", 3307, "u", "p", ""),
+        )
+        rt = SqlSyncRuntime(cfg, cloud_engine=None)
+        assert not rt.cloud.url.database
+
     def test_apply_saves_artifacts_and_records_state(self, tmp_path):
         rt, state = self._runtime(tmp_path)
         report = rt.apply()

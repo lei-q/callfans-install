@@ -42,6 +42,15 @@ def table_names(md: MetaData) -> set[str]:
     return {t.split(".", 1)[-1] for t in md.tables.keys()}
 
 
+def database_exists(engine: Engine, db: str) -> bool:
+    """配置的目标库是否存在（不存在时回退多库自动发现）。"""
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT 1 FROM information_schema.schemata WHERE schema_name = :db"
+        ), {"db": db}).fetchone()
+    return row is not None
+
+
 def list_databases(engine: Engine, extra_exclude: set[str] | None = None) -> list[str]:
     """非系统库列表（多库同步范围）。"""
     with engine.connect() as conn:

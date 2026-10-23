@@ -13,6 +13,7 @@ Up 顺序：建库/建表与列（结构）→ 数据 DML → 二级索引。Dow
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -26,9 +27,11 @@ from .guards import (
 )
 from .normalize import table_fingerprint
 from .reflect import (
-    list_databases, reflect_metadata, row_count, tables_in,
+    database_exists, list_databases, reflect_metadata, row_count, tables_in,
 )
 from .schema_diff import SchemaChange, SchemaDiffResult, diff_schemas
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,6 +46,7 @@ class SyncPlan:
     targets: dict = field(default_factory=dict)
     manifest_tables: list[str] = field(default_factory=list)
     databases: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)  # 配置回退等提示（人读报告）
 
     @property
     def statement_count(self) -> int:
@@ -105,6 +109,8 @@ class SyncPlan:
         lines = [f"sqlsync 计划 run={self.run_id}（{self.created_at}）"]
         if self.targets:
             lines.append(f"目标: 云库 {self.targets.get('cloud')} → B 库 {self.targets.get('local')}")
+        for note in self.notes:
+            lines.append(f"提示: {note}")
         if self.databases:
             shown = ", ".join(self.databases[:8]) + (
                 f" 等 {len(self.databases)} 个" if len(self.databases) > 8 else "")
@@ -188,16 +194,26 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
 
     # 范围：单库（CLOUD_DB_NAME）或多库自动发现
     exclude = set(cfg.policy.exclude_dbs)
+    notes: list[str] = []
+    cloud_scope_db = ""
     if cfg.cloud.database:
-        databases = [cfg.cloud.database]
+        if database_exists(cloud_engine, cfg.cloud.database):
+            databases = [cfg.cloud.database]
+            cloud_scope_db = cfg.cloud.database
+        else:
+            # 配置的单库在云端不存在（常见：库名连字符/下划线不一致）→
+            # 回退多库自动发现，B 库缺失的库照常自动创建
+            databases = list_databases(cloud_engine, exclude)
+            note = (f"云端不存在配置的库 `{cfg.cloud.database}`，"
+                    f"已回退多库自动发现: {', '.join(databases) or '（无可用库）'}")
+            log.warning(note)
+            notes.append(note)
     else:
         databases = list_databases(cloud_engine, exclude)
     local_dbs = set(list_databases(local_engine))
 
     for db in databases:
         rules = [r for r in manifest if r.db in (None, "") or r.db == db]
-        if not rules:
-            continue
         cloud_tables = tables_in(cloud_engine, db)
         # G3：显式绑定该库的清单表缺失 → 中止
         explicit_missing = sorted(r.name for r in rules
@@ -207,11 +223,9 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
                 set(), [TableRule(name=n, db=db) for n in explicit_missing])
 
         applicable = [r for r in rules if r.name in cloud_tables]
-        if not applicable:
-            continue
-
         local_has_db = db in local_dbs
         if not local_has_db:
+            # 云有 B 无：无论是否有清单表都建库（空库也镜像）
             schema_changes.append(SchemaChange(
                 "create_database", db,
                 f"CREATE DATABASE `{db}` DEFAULT CHARACTER SET utf8mb4 "
@@ -220,6 +234,9 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
                 down_ddl=f"DROP DATABASE IF EXISTS `{db}`;  -- 危险：含数据，仅在空跑回滚时使用",
                 db=db,
             ))
+            local_dbs.add(db)
+            if not applicable:
+                continue
             cloud_md = reflect_metadata(
                 cloud_engine, only=[r.name for r in applicable], schema=db)
             # B 库无此库：全部清单表为新建 + 种子数据
@@ -232,6 +249,9 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
                         rule.name, rule.pk, db=db,
                         changes=seed_inserts(rule.name, rows, db=db),
                         inserts=len(rows), cloud_rows=len(rows), local_rows=0))
+            continue
+
+        if not applicable:
             continue
 
         cloud_md = reflect_metadata(cloud_engine, only=[r.name for r in applicable], schema=db)
@@ -253,17 +273,18 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
                    for d in data_tables if d.changes})
     violations += check_plan_scale(total_stmts, affected, manifest, cfg.policy)
 
-    def _target(t) -> str:
-        db_part = t.database if t.database else "(多库自动)"
-        return f"{t.host}:{t.port}/{db_part} ({t.user})"
+    def _target(t, db: str | None = None) -> str:
+        db_part = db if db is not None else (t.database or "(多库自动)")
+        return f"{t.host}:{t.port}/{db_part or '(多库自动)'} ({t.user})"
 
     checksum = _checksum(cfg, databases, cloud_engine, data_tables)
     return SyncPlan(run_id, created_at, schema_changes, data_tables,
                     violations, checksum,
-                    targets={"cloud": _target(cfg.cloud), "local": _target(cfg.local)},
+                    targets={"cloud": _target(cfg.cloud, cloud_scope_db),
+                             "local": _target(cfg.local)},
                     manifest_tables=[f"[{r.db}] {r.name}" if r.db else r.name
                                      for r in manifest],
-                    databases=databases)
+                    databases=databases, notes=notes)
 
 
 def diff_result_for_new_db(cloud_md, applicable, db) -> SchemaDiffResult:
