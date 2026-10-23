@@ -130,6 +130,12 @@ def test_update_merges_sqlsync_then_artifacts(monkeypatch):
         report = resp.json()
         assert report["items"][0]["type"] == "sqlsync"
         assert report["items"][0]["result"] == "failed"
+        # 必须真的跑到同步执行：update() 已置 updating=True，此前该函数
+        # 被自身互斥检查返回 None，报 AttributeError: 'NoneType' ... status
+        assert report["items"][0]["run_id"] == "R1"
+        assert report["items"][0]["status"] == "aborted_by_guard"
+        assert "护栏拦截" in report["items"][0]["error"]
+        assert "AttributeError" not in report["items"][0]["error"]
         assert report["summary"]["failed"] == 1
         assert "sqlsync" in str(client.get("/api/v1/status", headers=headers).json())
 

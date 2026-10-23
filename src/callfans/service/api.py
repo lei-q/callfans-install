@@ -374,9 +374,13 @@ def create_app(
             "result": result, "error": error, "status": status, "run_id": run_id,
         }
 
-    def _run_sqlsync_once() -> dict:
-        """定时/手动共用的 SQL 同步执行（护栏触发返回 aborted 状态）。"""
-        if state.updating or state.busy:
+    def _run_sqlsync_once(check_busy: bool = True) -> dict | None:
+        """定时/手动共用的 SQL 同步执行（护栏触发返回 aborted 状态）。
+
+        check_busy=False 供"立即更新"链路使用：该链路已持有 updating 标志，
+        否则会被自身互斥检查跳过并返回 None（2026-10-24 实测 AttributeError）。
+        """
+        if check_busy and (state.updating or state.busy):
             log.info("更新/检查进行中，跳过本轮定时 sqlsync（互斥）")
             return None
         runtime = SqlSyncRuntime(sqlsync_cfg, on_event=emit)
@@ -400,7 +404,9 @@ def create_app(
         if run_sqlsync:
             emit("update_progress", {"item": "(sqlsync)", "type": "sqlsync", "stage": "start"})
             try:
-                rep = _run_sqlsync_once()
+                rep = _run_sqlsync_once(check_busy=False)
+                if rep is None:  # 防御：更新链路不应被互斥跳过
+                    raise RuntimeError("sqlsync 未执行（被互斥检查跳过）")
                 result = "success" if rep.status == "success" else "failed"
                 items.append(_sqlsync_item(result, rep.error, rep.status, rep.run_id))
             except Exception as e:  # sqlsync 域故障不阻断制品更新
