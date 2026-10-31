@@ -4,7 +4,8 @@
 - 范围 = 云库服务器全部非系统库（排除 SQLSYNC_EXCLUDE_DBS 名单），
   B 库同名对应；云有 B 无 → 计划含 CREATE DATABASE
 - 清单行 rule.db=None 适用所有库（表在该库存在才生效）；
-  rule.db 显式指定 → 缺表触发 G3
+  rule.db 显式指定 → 云库缺表触发 G3（整库/大比例缺失 fatal，个别缺失跳过告警；
+  `_cf_bak_*` 历史备份行自动忽略）
 单库模式（配了 CLOUD_DB_NAME）：仅同步该库，行为与旧版一致。
 
 Up 顺序：建库/建表与列（结构）→ 数据 DML → 二级索引。Down 严格逆序。
@@ -17,13 +18,13 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import text
+from sqlalchemy import MetaData, text
 
 from .config import CloudSyncConfig, TableRule
 from .data_diff import DataChange, TableDataDiff, diff_rows, seed_inserts
 from .guards import (
     GuardViolation, check_cloud_integrity, check_delete_rows, check_empty_cloud_table,
-    check_plan_scale,
+    check_plan_scale, is_stale_backup_table,
 )
 from .normalize import table_fingerprint
 from .reflect import (
@@ -54,7 +55,8 @@ class SyncPlan:
 
     @property
     def affected_tables(self) -> set[str]:
-        tables = {c.fq for c in self.schema_changes}
+        # create_database 不是表（其 fq 为 "db.db"，会把 G2 比例算成 101%）
+        tables = {c.fq for c in self.schema_changes if c.kind != "create_database"}
         tables |= {(f"{d.db}.{d.table}" if d.db else d.table)
                    for d in self.data_tables if d.changes}
         return tables
@@ -195,6 +197,16 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
     # 范围：单库（CLOUD_DB_NAME）或多库自动发现
     exclude = set(cfg.policy.exclude_dbs)
     notes: list[str] = []
+    # 清单中指向历史备份表的行（云端早已删除）自动忽略，不再触发 G3/G2
+    stale = sorted(r.name for r in manifest if is_stale_backup_table(r.name))
+    if stale:
+        manifest = [r for r in manifest if not is_stale_backup_table(r.name)]
+        note = f"已忽略 {len(stale)} 条指向历史备份表的清单行: {', '.join(stale)}"
+        log.warning(note)
+        notes.append(note)
+    # 首次同步判定：B 库不存在任何清单目标表 → G2 规模护栏降级为告警
+    target_count = 0
+    existing_local_targets = 0
     cloud_scope_db = ""
     if cfg.cloud.database:
         if database_exists(cloud_engine, cfg.cloud.database):
@@ -215,14 +227,13 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
     for db in databases:
         rules = [r for r in manifest if r.db in (None, "") or r.db == db]
         cloud_tables = tables_in(cloud_engine, db)
-        # G3：显式绑定该库的清单表缺失 → 中止
-        explicit_missing = sorted(r.name for r in rules
-                                  if r.db == db and r.name not in cloud_tables)
-        if explicit_missing:
-            violations += check_cloud_integrity(
-                set(), [TableRule(name=n, db=db) for n in explicit_missing])
+        # G3：显式绑定该库的清单表缺失 → 整库/大比例 fatal，个别表跳过并告警
+        bound = [r for r in rules if r.db == db]
+        if any(r.name not in cloud_tables for r in bound):
+            violations += check_cloud_integrity(cloud_tables, bound, label=db)
 
         applicable = [r for r in rules if r.name in cloud_tables]
+        target_count += len(applicable)
         local_has_db = db in local_dbs
         if not local_has_db:
             # 云有 B 无：无论是否有清单表都建库（空库也镜像）
@@ -255,7 +266,13 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
             continue
 
         cloud_md = reflect_metadata(cloud_engine, only=[r.name for r in applicable], schema=db)
-        local_md = reflect_metadata(local_engine, only=[r.name for r in applicable], schema=db)
+        # B 库可能只存在部分清单表：只为实际存在的表反射，缺表走 add_table
+        # （SQLAlchemy 在 only 里列出不存在的表会抛 InvalidRequestError）
+        local_tables = tables_in(local_engine, db)
+        local_only = [r.name for r in applicable if r.name in local_tables]
+        existing_local_targets += len(local_only)
+        local_md = (reflect_metadata(local_engine, only=local_only, schema=db)
+                    if local_only else MetaData())
         diff = diff_schemas(cloud_md, local_md, applicable, db=db)
         schema_changes.extend(diff.changes)
 
@@ -266,30 +283,30 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
                 cfg, cloud_engine, local_engine, rule, db,
                 cloud_md, local_md, added, dropped, violations))
 
-    # G2：漂移规模
-    total_stmts = len(schema_changes) + sum(len(d.changes) for d in data_tables)
-    affected = ({c.fq for c in schema_changes}
-                | {(f"{d.db}.{d.table}" if d.db else d.table)
-                   for d in data_tables if d.changes})
-    violations += check_plan_scale(total_stmts, affected, manifest, cfg.policy)
-
     def _target(t, db: str | None = None) -> str:
         db_part = db if db is not None else (t.database or "(多库自动)")
         return f"{t.host}:{t.port}/{db_part or '(多库自动)'} ({t.user})"
 
     checksum = _checksum(cfg, databases, cloud_engine, data_tables)
-    return SyncPlan(run_id, created_at, schema_changes, data_tables,
+    plan = SyncPlan(run_id, created_at, schema_changes, data_tables,
                     violations, checksum,
                     targets={"cloud": _target(cfg.cloud, cloud_scope_db),
                              "local": _target(cfg.local)},
                     manifest_tables=[f"[{r.db}] {r.name}" if r.db else r.name
                                      for r in manifest],
                     databases=databases, notes=notes)
+    # G2：漂移规模（首次全量：B 库无任何清单目标表 → 降级为非致命告警）
+    first_sync = target_count > 0 and existing_local_targets == 0
+    if first_sync:
+        log.info("首次全量同步（B 库无清单目标表），G2 规模护栏仅告警")
+    plan.guard_violations += check_plan_scale(
+        plan.statement_count, plan.affected_tables, manifest, cfg.policy,
+        first_sync=first_sync)
+    return plan
 
 
 def diff_result_for_new_db(cloud_md, applicable, db) -> SchemaDiffResult:
     """B 库整体缺失：全部清单表 → add_table（复用 diff_schemas 的空 local）。"""
-    from sqlalchemy import MetaData
     empty = MetaData()
     result = diff_schemas(cloud_md, empty, applicable, db=db)
     return result

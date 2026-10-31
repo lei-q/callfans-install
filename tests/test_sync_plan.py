@@ -64,6 +64,14 @@ class TestImpact:
         text = plan.report_text()
         assert "增 1" in text and "删 1" in text and "破坏性语句 2 条" in text
 
+    def test_create_database_not_counted_as_affected_table(self):
+        """G2 计数 bug：建库伪变更 fq 为 "db.db"，不得计入涉及表（175/174）。"""
+        schema = [SchemaChange("create_database", "std", "CREATE DATABASE `std`", db="std")]
+        plan = _plan(schema, [])
+        assert plan.statement_count == 1
+        assert plan.affected_tables == set()
+        assert "涉及表: 0" in plan.report_text()
+
 
 class TestGuards:
     def test_fatal_flag_and_report(self):

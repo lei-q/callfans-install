@@ -30,15 +30,48 @@ class TestG2PlanScale:
     def test_within_limits(self):
         assert check_plan_scale(50, {"a"}, _manifest(["a", "b", "c", "d"]), POLICY) == []
 
+    def test_first_sync_downgrades_to_warning(self):
+        """首次全量：超限语句/比例存在但为 non-fatal（2026-10-27 确认）。"""
+        v = check_plan_scale(528, {f"t{i}" for i in range(20)},
+                             _manifest([f"t{i}" for i in range(20)]), POLICY,
+                             first_sync=True)
+        assert v and all(not x.fatal for x in v)
+        assert all("首次全量同步" in x.message for x in v)
+
+    def test_first_sync_still_clean_when_within_limits(self):
+        assert check_plan_scale(3, {"a"}, _manifest(["a", "b"]), POLICY,
+                                first_sync=True) == []
+
 
 class TestG3CloudIntegrity:
     def test_missing_tables_fatal(self):
+        # 缺 2/3（67% ≥ 50%）→ 大比例缺失，fatal
         v = check_cloud_integrity({"a"}, _manifest(["a", "b", "c"]))
         assert len(v) == 1 and v[0].guard == "G3" and v[0].fatal
         assert "b" in v[0].tables and "c" in v[0].tables
 
     def test_all_present(self):
         assert check_cloud_integrity({"a", "b"}, _manifest(["a", "b"])) == []
+
+    def test_whole_db_missing_fatal(self):
+        v = check_cloud_integrity(set(), _manifest([f"t{i}" for i in range(5)]),
+                                  label="biz")
+        assert len(v) == 1 and v[0].fatal
+        assert "云库 biz" in v[0].message and "5/5" in v[0].message
+
+    def test_single_missing_table_skipped(self):
+        # 10 张里缺 1 张（10% < 50%）→ 清单行过期，跳过告警（2026-10-27 确认）
+        names = [f"t{i}" for i in range(10)]
+        v = check_cloud_integrity(set(names[1:]), _manifest(names))
+        assert len(v) == 1 and v[0].fatal is False
+        assert v[0].tables == ["t0"] and "跳过" in v[0].message
+
+    def test_stale_backup_rows_ignored(self):
+        """`_cf_bak_*` 清单行云端不存在不触发 G3。"""
+        manifest = _manifest(["a", "_cf_bak_20260920_mobile_arm_server"])
+        assert check_cloud_integrity({"a"}, manifest) == []
+        # 全部是失效备份行 → 同样不拦
+        assert check_cloud_integrity(set(), _manifest(["_cf_bak_x"])) == []
 
 
 class TestG4DeleteRows:

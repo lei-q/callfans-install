@@ -330,6 +330,73 @@ def test_multi_db_roundtrip(sandbox):
     assert again.statement_count == 0, f"多库 roundtrip 非空:\n{again.report_text()}"
 
 
+def test_first_full_sync_downgrades_g2(sandbox):
+    """首次全量（B 库无任何清单目标表）→ G2 超限仅告警；已有表时仍 fatal。
+
+    2026-10-27 确认：首次同步天然是几十上百张表的纯新增，不应被 G2 拦截。
+    """
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    _exec_sql(cloud_port, [
+        "CREATE DATABASE IF NOT EXISTS std5",
+        """CREATE TABLE std5.province(
+            id INT NOT NULL AUTO_INCREMENT,
+            name VARCHAR(32) NOT NULL,
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE std5.city(
+            id INT NOT NULL AUTO_INCREMENT,
+            name VARCHAR(32) NOT NULL,
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    ])
+    manifest = [TableRule(name="province", data=True, pk="id"),
+                TableRule(name="city", data=True, pk="id")]
+    policy = SyncPolicy(max_statements=0)  # 任何语句都超限，放大判定
+
+    # 1) B 库无 std5 → 首次全量：G2 存在但均为告警
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std5"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
+        policy=policy,
+    )
+    plan = build_plan(cfg, engine_for(cfg.cloud), engine_for(cfg.local), manifest)
+    assert plan.statement_count > 0
+    assert plan.guard_violations and all(not v.fatal for v in plan.guard_violations)
+    assert not plan.fatal, plan.report_text()
+    assert any("首次全量同步" in v.message for v in plan.guard_violations)
+
+    # 2) std6 已有 province → 非首次，同样的超限仍 fatal
+    _exec_sql(cloud_port, [
+        "CREATE DATABASE IF NOT EXISTS std6",
+        """CREATE TABLE std6.province(
+            id INT NOT NULL AUTO_INCREMENT,
+            name VARCHAR(32) NOT NULL,
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE std6.city(
+            id INT NOT NULL AUTO_INCREMENT,
+            name VARCHAR(32) NOT NULL,
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    ])
+    _exec_sql(local_port, [
+        "CREATE DATABASE IF NOT EXISTS std6",
+        """CREATE TABLE std6.province(
+            id INT NOT NULL AUTO_INCREMENT,
+            name VARCHAR(32) NOT NULL,
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    ])
+    cfg2 = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std6"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
+        policy=policy,
+    )
+    plan2 = build_plan(cfg2, engine_for(cfg2.cloud), engine_for(cfg2.local), manifest)
+    assert plan2.statement_count > 0
+    assert plan2.fatal, plan2.report_text()
+    assert any(v.guard == "G2" and v.fatal for v in plan2.guard_violations)
+
+
 def test_missing_db_created_with_real_backup(sandbox, tmp_path):
     """B 库缺库：G1 备份跳过未存在的库/表，CREATE DATABASE 能真正执行。"""
     from sqlalchemy import text
