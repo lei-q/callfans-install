@@ -331,10 +331,13 @@ def test_multi_db_roundtrip(sandbox):
 
 
 def test_first_full_sync_downgrades_g2(sandbox):
-    """首次全量（B 库无任何清单目标表）→ G2 超限仅告警；已有表时仍 fatal。
+    """首次全量/中断重跑（纯新增）→ G2 超限仅告警；修改既有表时仍 fatal。
 
-    2026-10-27 确认：首次同步天然是几十上百张表的纯新增，不应被 G2 拦截。
+    2026-10-27/11-03 确认：首轮同步天然是几十上百张表的纯新增，失败后重跑
+    也必须能继续收敛，不应被 G2 拦截。
     """
+    from sqlalchemy import text
+
     from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
     from callfans.core.sync.plan import build_plan
     from callfans.core.sync.reflect import engine_for
@@ -361,29 +364,37 @@ def test_first_full_sync_downgrades_g2(sandbox):
         local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
         policy=policy,
     )
-    plan = build_plan(cfg, engine_for(cfg.cloud), engine_for(cfg.local), manifest)
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    plan = build_plan(cfg, cloud, local, manifest)
     assert plan.statement_count > 0
     assert plan.guard_violations and all(not v.fatal for v in plan.guard_violations)
     assert not plan.fatal, plan.report_text()
-    assert any("首次全量同步" in v.message for v in plan.guard_violations)
+    assert any("首次全量" in v.message for v in plan.guard_violations)
 
-    # 2) std6 已有 province → 非首次，同样的超限仍 fatal
+    # 1b) 模拟首次同步中断后重跑（已建部分表）→ 仍按纯新增放行
+    with local.begin() as conn:
+        for stmt in plan.up_statements()[:2]:   # CREATE DATABASE + 第一张表
+            conn.execute(text(stmt))
+    retry = build_plan(cfg, engine_for(cfg.cloud), engine_for(cfg.local), manifest)
+    assert retry.statement_count > 0
+    assert not retry.fatal, retry.report_text()
+
+    # 2) std6 已有表但结构需修改 → 非纯新增，同样的超限仍 fatal
     _exec_sql(cloud_port, [
         "CREATE DATABASE IF NOT EXISTS std6",
-        """CREATE TABLE std6.province(
+        """CREATE TABLE std6.zzz_base(
             id INT NOT NULL AUTO_INCREMENT,
             name VARCHAR(32) NOT NULL,
             PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
-        """CREATE TABLE std6.city(
+        """CREATE TABLE std6.zzz_new(
             id INT NOT NULL AUTO_INCREMENT,
-            name VARCHAR(32) NOT NULL,
             PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
     ])
     _exec_sql(local_port, [
         "CREATE DATABASE IF NOT EXISTS std6",
-        """CREATE TABLE std6.province(
+        """CREATE TABLE std6.zzz_base(
             id INT NOT NULL AUTO_INCREMENT,
-            name VARCHAR(32) NOT NULL,
+            name VARCHAR(8) NOT NULL,
             PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
     ])
     cfg2 = CloudSyncConfig(
@@ -391,7 +402,9 @@ def test_first_full_sync_downgrades_g2(sandbox):
         local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
         policy=policy,
     )
-    plan2 = build_plan(cfg2, engine_for(cfg2.cloud), engine_for(cfg2.local), manifest)
+    plan2 = build_plan(cfg2, engine_for(cfg2.cloud), engine_for(cfg2.local),
+                       [TableRule(name="zzz_base", data=True, pk="id"),
+                        TableRule(name="zzz_new", data=True, pk="id")])
     assert plan2.statement_count > 0
     assert plan2.fatal, plan2.report_text()
     assert any(v.guard == "G2" and v.fatal for v in plan2.guard_violations)
@@ -446,4 +459,50 @@ def test_missing_db_created_with_real_backup(sandbox, tmp_path):
     with local.connect() as conn:
         rows = conn.execute(text("SELECT COUNT(*) FROM std3.province")).scalar()
     assert rows == 2
+
+
+def test_fk_parent_created_before_child(sandbox):
+    """建表顺序遵循外键依赖：父表先建（1824 Failed to open the referenced table）。"""
+    from sqlalchemy import text
+
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    _exec_sql(cloud_port, [
+        "CREATE DATABASE IF NOT EXISTS std7",
+        """CREATE TABLE std7.zzz_parent(
+            id BIGINT NOT NULL AUTO_INCREMENT,
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE std7.aaa_child(
+            id BIGINT NOT NULL AUTO_INCREMENT,
+            parent_id BIGINT NOT NULL,
+            PRIMARY KEY (id),
+            KEY fk_child_parent (parent_id),
+            CONSTRAINT fk_child_parent FOREIGN KEY (parent_id)
+                REFERENCES std7.zzz_parent(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    ])
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std7"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
+        policy=SyncPolicy(),
+    )
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    # 清单故意子表在前（字母序也如此）——计划必须自行按外键重排
+    manifest = [TableRule(name="aaa_child"), TableRule(name="zzz_parent")]
+    plan = build_plan(cfg, cloud, local, manifest)
+    ups = plan.up_statements()
+
+    def pos(name: str) -> int:
+        return next(i for i, s in enumerate(ups) if f"CREATE TABLE `std7`.`{name}`" in s)
+
+    assert pos("zzz_parent") < pos("aaa_child"), "\n".join(ups)
+
+    with local.begin() as conn:
+        for stmt in ups:
+            conn.execute(text(stmt))
+
+    again = build_plan(cfg, cloud, local, manifest)
+    assert again.statement_count == 0, again.report_text()
 

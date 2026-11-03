@@ -49,6 +49,35 @@ class TestOrdering:
         plan = _plan(schema, data)
         assert plan.down_statements() == ["DOWN-idx;", "DOWN-ins-1;", "DOWN-t1;"]
 
+    def test_fk_dependencies_order_parent_before_child(self):
+        """外键父表先建（1824 Failed to open the referenced table，2026-11-03）。"""
+        schema = [
+            SchemaChange("add_table", "child", "CREATE child", down_ddl="DOWN-child;",
+                         depends_on=("parent",)),
+            SchemaChange("add_table", "parent", "CREATE parent", down_ddl="DOWN-parent;"),
+            # 自引用防御：即使残留自依赖也不能死循环
+            SchemaChange("add_table", "loop", "CREATE loop", down_ddl="DOWN-loop;",
+                         depends_on=("loop",)),
+        ]
+        plan = _plan(schema, [])
+        ups = plan.up_statements()
+        assert ups.index("CREATE parent") < ups.index("CREATE child")
+        downs = plan.down_statements()
+        assert downs.index("DOWN-child;") < downs.index("DOWN-parent;")
+
+    def test_fk_dependencies_scoped_per_database(self):
+        """多库同名表：依赖按 fq 匹配，不得跨库误排。"""
+        schema = [
+            SchemaChange("add_table", "child", "CREATE a.child", db="a",
+                         depends_on=("a.parent",)),
+            SchemaChange("add_table", "parent", "CREATE b.parent", db="b"),
+            SchemaChange("add_table", "parent", "CREATE a.parent", db="a"),
+        ]
+        plan = _plan(schema, [])
+        assert plan.up_statements() == [
+            "CREATE a.parent", "CREATE a.child", "CREATE b.parent",
+        ]
+
 
 class TestImpact:
     def test_counts_and_destructive(self):

@@ -41,6 +41,8 @@ class SchemaChange:
     detail: str = ""
     down_ddl: str = ""  # 逆操作（drop_table/drop_column 数据恢复依赖备份）
     db: str = ""        # 多库模式：所属库（空 = 单库兼容）
+    # 建表依赖的外键父表（fq 格式，如 "rpa.auth_group"）；执行时据此拓扑排序
+    depends_on: tuple[str, ...] = ()
 
     @property
     def fq(self) -> str:
@@ -109,6 +111,23 @@ def _force_quote(md) -> None:
                 pass
 
 
+def _fk_dependencies(table, db: str | None) -> tuple[str, ...]:
+    """建表语句依赖的外键父表（与 SchemaChange.fq 同格式；自引用忽略）。
+
+    只用 target_fullname 字符串解析，不去解析 fk.column——反射时只加载了
+    清单内的表，父表不在 MetaData 里，解析列会抛 NoReferencedTableError。
+    """
+    deps: set[str] = set()
+    for fk in table.foreign_keys:
+        ref = fk.target_fullname.rsplit(".", 1)[0]  # 'db.table' 或 'table'
+        parts = ref.split(".")
+        ref_db, ref_table = (parts[0], parts[-1]) if len(parts) == 2 else (db or "", ref)
+        if ref_table == table.name and ref_db == (db or ""):
+            continue  # 自引用：MySQL 允许同语句内引用自身
+        deps.add(f"{ref_db}.{ref_table}" if ref_db else ref_table)
+    return tuple(sorted(deps))
+
+
 def diff_schemas(cloud_md, local_md, manifest: list[TableRule],
                  ignore_indexes: list[str] | None = None,
                  db: str | None = None) -> SchemaDiffResult:
@@ -133,9 +152,17 @@ def diff_schemas(cloud_md, local_md, manifest: list[TableRule],
                 "add_table", rule.name, create_ddl,
                 detail="含主键；二级索引随后单独建",
                 down_ddl=f"DROP TABLE IF EXISTS {_tq(db, rule.name)};",
-                db=db or "",
+                db=db or "", depends_on=_fk_dependencies(cloud_t, db),
             ))
+            # MySQL 建外键时若列上无索引会自动生成同名索引，再 CREATE INDEX 会
+            # 报 1061 Duplicate key name——与 FK 同名同列的索引跳过。
+            fk_implicit = {
+                fkc.name: tuple(c.name for c in fkc.columns)
+                for fkc in cloud_t.foreign_key_constraints if fkc.name
+            }
             for idx in sorted(cloud_t.indexes, key=lambda i: i.name or ""):
+                if fk_implicit.get(idx.name) == tuple(c.name for c in idx.columns):
+                    continue
                 result.changes.append(_index_change("add_index", rule.name, idx, db=db))
             continue
         _diff_table(result, rule, cloud_t, local_t, ignore_idx, db=db)

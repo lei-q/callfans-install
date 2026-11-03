@@ -36,7 +36,7 @@ class TestG2PlanScale:
                              _manifest([f"t{i}" for i in range(20)]), POLICY,
                              first_sync=True)
         assert v and all(not x.fatal for x in v)
-        assert all("首次全量同步" in x.message for x in v)
+        assert all("首次全量" in x.message for x in v)
 
     def test_first_sync_still_clean_when_within_limits(self):
         assert check_plan_scale(3, {"a"}, _manifest(["a", "b"]), POLICY,

@@ -1,7 +1,8 @@
 """结构比对引擎：内存 MetaData 构造的漂移矩阵（M2 验收）。"""
 
 from sqlalchemy import (
-    Column, Index, Integer, MetaData, String, Table, Text, VARCHAR,
+    Column, ForeignKey, ForeignKeyConstraint, Index, Integer, MetaData, String,
+    Table, Text, VARCHAR,
 )
 from sqlalchemy.dialects.mysql import BIGINT as MBIGINT, TINYINT as MTINYINT
 
@@ -241,3 +242,43 @@ class TestResultApi:
         assert result.affected_tables == {"sys_config", "sys_dict"}
         assert result.destructive == []
         assert "新增列" in result.summary() and "新建表" in result.summary()
+
+
+def test_add_table_records_fk_dependencies():
+    """add_table 记录外键父表（父表先建），自引用不记为依赖。"""
+    md = MetaData()
+    Table("parent", md, Column("id", Integer, primary_key=True))
+    Table("child", md,
+          Column("id", Integer, primary_key=True),
+          Column("parent_id", Integer, ForeignKey("parent.id")))
+    Table("node", md,
+          Column("id", Integer, primary_key=True),
+          Column("parent_id", Integer, ForeignKey("node.id")))
+
+    result = diff_schemas(md, MetaData(),
+                          [_rule("parent"), _rule("child"), _rule("node")])
+    deps = {c.table: c.depends_on for c in result.changes if c.kind == "add_table"}
+    assert deps["parent"] == ()
+    assert deps["child"] == ("parent",)
+    assert deps["node"] == ()            # 自引用忽略
+
+
+def test_skip_index_implicitly_created_by_foreign_key():
+    """建表带 FK 时 MySQL 自动生成同名索引，计划不得再 CREATE INDEX（1061）。"""
+    md = MetaData()
+    Table("parent", md, Column("id", Integer, primary_key=True))
+    Table("child", md,
+          Column("id", Integer, primary_key=True),
+          Column("parent_id", Integer, nullable=False),
+          Column("v", Integer),
+          ForeignKeyConstraint(["parent_id"], ["parent.id"],
+                               name="fk_child_parent"),
+          Index("fk_child_parent", "parent_id"),   # FK 自动索引（同名同列）
+          Index("idx_v", "v"))
+
+    result = diff_schemas(md, MetaData(), [_rule("parent"), _rule("child")])
+    child_indexes = [c for c in result.changes
+                     if c.kind == "add_index" and c.table == "child"]
+    assert [c.detail for c in child_indexes] == ["v"]
+    assert any(c.kind == "add_table" and c.table == "child"
+               for c in result.changes)

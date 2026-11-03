@@ -9,6 +9,7 @@
 单库模式（配了 CLOUD_DB_NAME）：仅同步该库，行为与旧版一致。
 
 Up 顺序：建库/建表与列（结构）→ 数据 DML → 二级索引。Down 严格逆序。
+建表按外键依赖拓扑排序（父表先建）；FK 自动生成的同名索引不再单独创建。
 """
 
 from __future__ import annotations
@@ -85,10 +86,40 @@ class SyncPlan:
 
     # ---- 有序语句 ----
 
+    def _ordered_structure(self) -> list[SchemaChange]:
+        """建表按外键依赖拓扑排序（父表先建），其余结构变更保持原序。"""
+        structure = [c for c in self.schema_changes
+                     if not c.kind.endswith("_index") and c.kind != "create_database"]
+        creates = [c for c in structure if c.kind == "add_table"]
+        if not creates:
+            return structure
+        by_key = {c.fq: c for c in creates}
+        ordered: list[SchemaChange] = []
+        done: set[str] = set()
+        visiting: set[str] = set()
+
+        def visit(key: str) -> None:
+            if key in done:
+                return
+            c = by_key.get(key)
+            if c is None:
+                return  # 父表不在本次计划（已存在或不同步）
+            if key in visiting:
+                return  # 循环外键：保持原序，交由 MySQL 报错
+            visiting.add(key)
+            for dep in c.depends_on:
+                visit(dep)
+            visiting.discard(key)
+            done.add(key)
+            ordered.append(c)
+
+        for c in creates:
+            visit(c.fq)
+        return ordered + [c for c in structure if c.kind != "add_table"]
+
     def up_statements(self) -> list[str]:
         creates_db = [c.ddl for c in self.schema_changes if c.kind == "create_database"]
-        structure = [c.ddl for c in self.schema_changes
-                     if not c.kind.endswith("_index") and c.kind != "create_database"]
+        structure = [c.ddl for c in self._ordered_structure()]
         dml: list[str] = []
         for d in self.data_tables:
             dml.extend(c.up_sql for c in d.changes)
@@ -98,8 +129,7 @@ class SyncPlan:
     def down_statements(self) -> list[str]:
         inverses = (
             [c.down_ddl for c in self.schema_changes if c.kind == "create_database"]
-            + [c.down_ddl for c in self.schema_changes
-               if not c.kind.endswith("_index") and c.kind != "create_database"]
+            + [c.down_ddl for c in self._ordered_structure()]
             + [c.down_sql for d in self.data_tables for c in d.changes]
             + [c.down_ddl for c in self.schema_changes if c.kind.endswith("_index")]
         )
@@ -204,7 +234,7 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
         note = f"已忽略 {len(stale)} 条指向历史备份表的清单行: {', '.join(stale)}"
         log.warning(note)
         notes.append(note)
-    # 首次同步判定：B 库不存在任何清单目标表 → G2 规模护栏降级为告警
+    # 首次同步判定：计划是否纯新增、B 库是否还有清单目标表缺失 → G2 降级
     target_count = 0
     existing_local_targets = 0
     cloud_scope_db = ""
@@ -295,10 +325,15 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
                     manifest_tables=[f"[{r.db}] {r.name}" if r.db else r.name
                                      for r in manifest],
                     databases=databases, notes=notes)
-    # G2：漂移规模（首次全量：B 库无任何清单目标表 → 降级为非致命告警）
-    first_sync = target_count > 0 and existing_local_targets == 0
+    # G2：漂移规模（首次全量/中断重跑：纯新增计划 → 降级为非致命告警）
+    additive = (
+        all(c.kind in ("create_database", "add_table", "add_index")
+            for c in schema_changes)
+        and all(d.updates == 0 and d.deletes == 0 for d in data_tables)
+    )
+    first_sync = additive and existing_local_targets < target_count
     if first_sync:
-        log.info("首次全量同步（B 库无清单目标表），G2 规模护栏仅告警")
+        log.info("首次全量/中断重跑（纯新增计划），G2 规模护栏仅告警")
     plan.guard_violations += check_plan_scale(
         plan.statement_count, plan.affected_tables, manifest, cfg.policy,
         first_sync=first_sync)
