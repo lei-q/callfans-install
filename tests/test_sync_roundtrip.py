@@ -330,6 +330,56 @@ def test_multi_db_roundtrip(sandbox):
     assert again.statement_count == 0, f"多库 roundtrip 非空:\n{again.report_text()}"
 
 
+def test_multi_db_index_change_carries_db_for_backup(sandbox, tmp_path):
+    """多库模式：既有表的索引漂移必须带库名。
+
+    2026-11-04 现场：add_index 的 db 为空 → G1 备份按空库执行
+    CREATE TABLE ... LIKE，报 (1046, 'No database selected')，整次更新中止。
+    """
+    from sqlalchemy import text
+
+    from callfans.core.sync.backup import BackupManager
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.executor import SqlSyncExecutor
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    _exec_sql(cloud_port, [
+        "ALTER TABLE std.sys_dict DROP INDEX idx_value",
+        "ALTER TABLE std.sys_dict ADD INDEX idx_code (code(32))",
+    ])
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", ""),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
+        policy=SyncPolicy(),
+    )
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    manifest = [TableRule(name="sys_dict", data=True, pk="code")]
+
+    plan = build_plan(cfg, cloud, local, manifest)
+    idx = [c for c in plan.schema_changes if c.kind in ("add_index", "drop_index")]
+    assert idx, plan.report_text()
+    assert all(c.db == "std" for c in idx)          # 备份/DDL 都靠它定位库
+    assert all("`std`" in c.ddl for c in idx)       # DDL 自带库名（连接不选库）
+    assert ("std", "sys_dict") in plan.backup_targets
+
+    def conn_factory():
+        import pymysql
+
+        return pymysql.connect(host="127.0.0.1", port=local_port, user="root",
+                               password="root", charset="utf8mb4")  # 故意不选库
+
+    executor = SqlSyncExecutor(cfg, local, BackupManager(conn_factory, tmp_path / "bak"),
+                               history_path=tmp_path / "h.jsonl")
+    report = executor.apply(plan)
+    assert report.status == "success", report.error
+    assert "sys_dict" in report.backup_tables
+
+    again = build_plan(cfg, cloud, local, manifest)
+    assert again.statement_count == 0, again.report_text()
+
+
 def test_first_full_sync_downgrades_g2(sandbox):
     """首次全量/中断重跑 → G2 超限仅告警；已收敛的库有大改时仍 fatal。
 

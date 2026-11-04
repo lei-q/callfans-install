@@ -244,10 +244,11 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
     local_idx = _usable(local_t)
     for fp, idx in cloud_idx.items():
         if fp not in local_idx:
-            result.changes.append(_index_change("add_index", rule.name, idx))
+            result.changes.append(_index_change("add_index", rule.name, idx, db=db))
     for fp, idx in local_idx.items():
         if fp not in cloud_idx:
-            result.changes.append(_index_change("drop_index", rule.name, idx, destructive=True))
+            result.changes.append(
+                _index_change("drop_index", rule.name, idx, destructive=True, db=db))
     # ---- 主键 ----
     cloud_pk = tuple(c.name for c in cloud_t.primary_key.columns)
     local_pk = tuple(c.name for c in local_t.primary_key.columns)
@@ -266,7 +267,7 @@ def _diff_table(result: SchemaDiffResult, rule: TableRule, cloud_t, local_t,
             result.changes.append(SchemaChange(
                 "change_pk", rule.name,
                 f"ALTER TABLE {_tq(db, rule.name)} " + ", ".join(parts),
-                destructive=True,
+                destructive=True, db=db or "",
                 detail=f"{local_pk or '无'}→{cloud_pk or '无'}",
                 down_ddl=f"ALTER TABLE {_tq(db, rule.name)} " + ", ".join(down_parts) + ";",
             ))

@@ -231,6 +231,39 @@ class TestIndexAndPk:
         assert len(pk) == 1 and pk[0].destructive
         assert "ADD PRIMARY KEY (`code`, `seq`)" in pk[0].ddl
 
+    def test_index_and_pk_changes_carry_db(self):
+        """多库模式：既有表的索引/主键差异必须带库名（否则备份与 DDL 报 1046）。
+
+        2026-11-04 现场：add_index 的 db 为空 → G1 备份对空库执行
+        CREATE TABLE ... LIKE，报 No database selected，整次更新中止。
+        """
+        db = "callfans-standard"
+
+        def _indexed(md, idx_name, col):
+            t = Table("t_idx", md,
+                      Column("id", Integer, primary_key=True),
+                      Column("v", String(10)), schema=db)
+            Index(idx_name, t.c[col])
+            return t
+
+        cloud, local = MetaData(), MetaData()
+        _indexed(cloud, "idx_cloud", "v")
+        _indexed(local, "idx_local", "id")
+        result = diff_schemas(cloud, local, [_rule("t_idx")], db=db)
+        add = next(c for c in result.changes if c.kind == "add_index")
+        drop = next(c for c in result.changes if c.kind == "drop_index")
+        assert add.db == db and drop.db == db
+        assert f"`{db}`" in add.ddl and f"`{db}`" in drop.ddl
+
+        cloud_pk, local_pk = MetaData(), MetaData()
+        Table("t_pk", cloud_pk, Column("id", Integer, primary_key=True),
+              Column("v", String(5)), schema=db)
+        Table("t_pk", local_pk, Column("id", Integer, primary_key=True),
+              Column("v", String(5), primary_key=True), schema=db)
+        pk = next(c for c in diff_schemas(cloud_pk, local_pk, [_rule("t_pk")], db=db).changes
+                  if c.kind == "change_pk")
+        assert pk.db == db
+
 
 class TestResultApi:
     def test_counts_and_summary(self):
