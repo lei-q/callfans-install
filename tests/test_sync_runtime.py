@@ -158,6 +158,38 @@ class TestRuntime:
         rt = SqlSyncRuntime(cfg, cloud_engine=None)
         assert not rt.cloud.url.database
 
+    def test_build_passes_initial_sync_from_state(self, tmp_path, monkeypatch):
+        """无成功记录（含失败重跑）→ initial_sync=True；成功过 → 恢复常规 G2。"""
+        from callfans.core.local import StateStore
+        from callfans.core.sync import runtime as rt_mod
+        from callfans.core.sync.config import CloudSyncConfig, DbTarget
+        from callfans.core.sync.plan import SyncPlan
+
+        seen = []
+
+        def fake_build_plan(cfg, cloud, local, manifest, initial_sync=False):
+            seen.append(initial_sync)
+            return SyncPlan(run_id="r", created_at="t", schema_changes=[],
+                            data_tables=[], guard_violations=[], checksum_cloud="cs")
+
+        monkeypatch.setattr(rt_mod, "build_plan", fake_build_plan)
+        cfg = CloudSyncConfig(
+            cloud=DbTarget("h", 3306, "u", "p", "std"),
+            local=DbTarget("h", 3307, "u", "p", ""),
+        )
+        state = StateStore(tmp_path / "state.json")
+        rt = rt_mod.SqlSyncRuntime(cfg, cloud_engine=FakeEngine(rows=MANIFEST_ROWS),
+                                   local_engine=_ExecEngine(), state=state,
+                                   artifacts_root=tmp_path / "art")
+        rt.build()
+        assert seen[-1] is True  # 无记录
+        state.set("sqlsync", {"last_status": "aborted_by_guard"})
+        rt.build()
+        assert seen[-1] is True  # 上次被护栏拦截 → 中断重跑
+        state.set("sqlsync", {"last_status": "success"})
+        rt.build()
+        assert seen[-1] is False  # 已收敛过 → 常规 G2 规模检查
+
     def test_apply_saves_artifacts_and_records_state(self, tmp_path):
         rt, state = self._runtime(tmp_path)
         report = rt.apply()

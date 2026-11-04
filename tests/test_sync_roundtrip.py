@@ -331,10 +331,11 @@ def test_multi_db_roundtrip(sandbox):
 
 
 def test_first_full_sync_downgrades_g2(sandbox):
-    """首次全量/中断重跑（纯新增）→ G2 超限仅告警；修改既有表时仍 fatal。
+    """首次全量/中断重跑 → G2 超限仅告警；已收敛的库有大改时仍 fatal。
 
-    2026-10-27/11-03 确认：首轮同步天然是几十上百张表的纯新增，失败后重跑
-    也必须能继续收敛，不应被 G2 拦截。
+    2026-10-27/11-03 确认：首轮同步天然是几十上百张表的变更，失败后重跑
+    也必须能继续收敛，不应被 G2 拦截；2026-11-04 补充：重跑计划里夹带的
+    个别 modify_column 不能推翻"首次同步"判定（现场 mobile_device 默认值）。
     """
     from sqlalchemy import text
 
@@ -371,7 +372,7 @@ def test_first_full_sync_downgrades_g2(sandbox):
     assert not plan.fatal, plan.report_text()
     assert any("首次全量" in v.message for v in plan.guard_violations)
 
-    # 1b) 模拟首次同步中断后重跑（已建部分表）→ 仍按纯新增放行
+    # 1b) 模拟首次同步中断后重跑（已建部分表）→ 仍放行（缺表过半）
     with local.begin() as conn:
         for stmt in plan.up_statements()[:2]:   # CREATE DATABASE + 第一张表
             conn.execute(text(stmt))
@@ -379,13 +380,16 @@ def test_first_full_sync_downgrades_g2(sandbox):
     assert retry.statement_count > 0
     assert not retry.fatal, retry.report_text()
 
-    # 2) std6 已有表但结构需修改 → 非纯新增，同样的超限仍 fatal
+    # 2) std6 大部分目标表已存在（仅个别缺表 + 列修改）→ 不属于首次同步，仍 fatal
     _exec_sql(cloud_port, [
         "CREATE DATABASE IF NOT EXISTS std6",
         """CREATE TABLE std6.zzz_base(
             id INT NOT NULL AUTO_INCREMENT,
             name VARCHAR(32) NOT NULL,
             PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "CREATE TABLE std6.zzz_e1(id INT NOT NULL PRIMARY KEY)",
+        "CREATE TABLE std6.zzz_e2(id INT NOT NULL PRIMARY KEY)",
+        "CREATE TABLE std6.zzz_e3(id INT NOT NULL PRIMARY KEY)",
         """CREATE TABLE std6.zzz_new(
             id INT NOT NULL AUTO_INCREMENT,
             PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
@@ -396,18 +400,43 @@ def test_first_full_sync_downgrades_g2(sandbox):
             id INT NOT NULL AUTO_INCREMENT,
             name VARCHAR(8) NOT NULL,
             PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        "CREATE TABLE std6.zzz_e1(id INT NOT NULL PRIMARY KEY)",
+        "CREATE TABLE std6.zzz_e2(id INT NOT NULL PRIMARY KEY)",
+        "CREATE TABLE std6.zzz_e3(id INT NOT NULL PRIMARY KEY)",
     ])
     cfg2 = CloudSyncConfig(
         cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std6"),
         local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
         policy=policy,
     )
-    plan2 = build_plan(cfg2, engine_for(cfg2.cloud), engine_for(cfg2.local),
-                       [TableRule(name="zzz_base", data=True, pk="id"),
-                        TableRule(name="zzz_new", data=True, pk="id")])
+    manifest6 = [TableRule(name=n) for n in
+                 ("zzz_base", "zzz_e1", "zzz_e2", "zzz_e3", "zzz_new")]
+    plan2 = build_plan(cfg2, engine_for(cfg2.cloud), engine_for(cfg2.local), manifest6)
+    assert any(c.kind == "modify_column" for c in plan2.schema_changes)
     assert plan2.statement_count > 0
     assert plan2.fatal, plan2.report_text()
     assert any(v.guard == "G2" and v.fatal for v in plan2.guard_violations)
+
+    # 3) initial_sync=True（state 无成功记录）→ 同样的计划不再误拦：
+    #    首次同步重跑常夹带个别 modify_column（2026-11-04 现场：mobile_device 默认值）
+    cfg3 = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", "std6"),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
+        policy=policy,
+    )
+    relaxed = build_plan(cfg3, engine_for(cfg3.cloud), engine_for(cfg3.local), manifest6,
+                         initial_sync=True)
+    assert relaxed.statement_count == plan2.statement_count
+    assert not relaxed.fatal, relaxed.report_text()
+    assert any("首次全量" in v.message for v in relaxed.guard_violations)
+
+    # 4) 同样 plan 若含破坏性变更（此处删行）→ initial_sync 也不能放行
+    _exec_sql(cloud_port, ["INSERT INTO std6.zzz_e1 (id) VALUES (1)"])
+    _exec_sql(local_port, ["INSERT INTO std6.zzz_e1 (id) VALUES (1),(2)"])
+    p4 = build_plan(cfg3, engine_for(cfg3.cloud), engine_for(cfg3.local),
+                    [TableRule(name="zzz_e1", data=True, pk="id")], initial_sync=True)
+    assert any(d.deletes == 1 for d in p4.data_tables), p4.report_text()
+    assert p4.fatal, p4.report_text()
 
 
 def test_missing_db_created_with_real_backup(sandbox, tmp_path):

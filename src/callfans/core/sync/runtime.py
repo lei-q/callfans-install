@@ -74,7 +74,11 @@ class SqlSyncRuntime:
         return get_manifest(self.cloud, self._artifacts / "tables_cache.json")
 
     def build(self) -> SyncPlan:
-        return build_plan(self.cfg, self.cloud, self.local, self.manifest())
+        # 尚无成功同步记录 → 首次同步（含失败后重跑），交给 G2 放宽判定
+        last = self.state.get("sqlsync") or {}
+        initial_sync = last.get("last_status") != "success"
+        return build_plan(self.cfg, self.cloud, self.local, self.manifest(),
+                          initial_sync=initial_sync)
 
     def status(self) -> dict:
         from sqlalchemy import text

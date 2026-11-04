@@ -76,9 +76,10 @@ def check_plan_scale(statement_count: int, affected_tables: set[str],
     比例闸门仅在清单 ≥ 10 张表时生效：小清单（如新客户 2-3 张表）比例无
     统计意义，由语句数上限 + G3/G4/G5 兜底（2026-09-20 实测修订）。
 
-    first_sync：纯新增计划且 B 库仍有清单目标表缺失（首次全量/中断重跑）
-    → 超限降级为非致命告警（2026-10-27/11-03 确认：首轮同步天然是大规模
-    纯新增，且失败后重跑必须能继续收敛，不应拦截）。
+    first_sync：尚未成功收敛过（首次全量/各阶段中断重跑），或 B 库仍缺
+    一半以上目标表 → 超限降级为非致命告警（2026-10-27/11-03 确认：首轮同步
+    天然是大规模变更，且失败后重跑必须能继续收敛，不应拦截；计划含破坏性
+    语句时不降级，由调用方判定）。
     """
     violations: list[GuardViolation] = []
     if statement_count > policy.max_statements:
@@ -99,7 +100,7 @@ def check_plan_scale(statement_count: int, affected_tables: set[str],
     if first_sync:
         for v in violations:
             v.fatal = False
-            v.message += "（首次全量/中断重跑，纯新增计划，自动放行）"
+            v.message += "（首次全量/中断重跑，自动放行）"
     return violations
 
 

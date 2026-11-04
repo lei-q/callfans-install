@@ -218,7 +218,12 @@ def _fetch_all(engine, db: str, table: str, columns: list[str], pk: str,
 
 
 def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
-               manifest: list[TableRule]) -> SyncPlan:
+               manifest: list[TableRule], initial_sync: bool = False) -> SyncPlan:
+    """生成同步计划。
+
+    initial_sync：该 B 库尚无成功同步记录（runtime 从 state.json 读取）——
+    首次全量/中断重跑，G2 规模护栏降级为告警（破坏性变更除外）。
+    """
     run_id, created_at = _now_id()
     violations: list[GuardViolation] = []
     schema_changes: list[SchemaChange] = []
@@ -234,7 +239,7 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
         note = f"已忽略 {len(stale)} 条指向历史备份表的清单行: {', '.join(stale)}"
         log.warning(note)
         notes.append(note)
-    # 首次同步判定：计划是否纯新增、B 库是否还有清单目标表缺失 → G2 降级
+    # 首次同步统计：B 库还有多少清单目标表缺失（供 G2 放宽判定）
     target_count = 0
     existing_local_targets = 0
     cloud_scope_db = ""
@@ -325,15 +330,17 @@ def build_plan(cfg: CloudSyncConfig, cloud_engine, local_engine,
                     manifest_tables=[f"[{r.db}] {r.name}" if r.db else r.name
                                      for r in manifest],
                     databases=databases, notes=notes)
-    # G2：漂移规模（首次全量/中断重跑：纯新增计划 → 降级为非致命告警）
-    additive = (
-        all(c.kind in ("create_database", "add_table", "add_index")
-            for c in schema_changes)
-        and all(d.updates == 0 and d.deletes == 0 for d in data_tables)
-    )
-    first_sync = additive and existing_local_targets < target_count
+    # G2：漂移规模（首次同步/中断重跑：无破坏性变更 → 降级为非致命告警）
+    # 判定依据是"尚未收敛"而非"纯新增"：首次同步中途失败后重跑，计划里
+    # 常夹带个别 modify_column（如列默认值/注释），旧判定会误拦（2026-11-04 现场）。
+    #   initial_sync：state 无成功记录（runtime 传入，覆盖结构/数据/索引各阶段重跑）
+    #   provisioning：B 库仍缺一半以上清单目标表（新建库/库被清空后重建）
+    # 有破坏性语句（drop/delete）时始终不放行。
+    provisioning = (target_count > 0
+                    and (target_count - existing_local_targets) * 2 >= target_count)
+    first_sync = not plan.destructive and (initial_sync or provisioning)
     if first_sync:
-        log.info("首次全量/中断重跑（纯新增计划），G2 规模护栏仅告警")
+        log.info("首次同步/中断重跑（无破坏性变更），G2 规模护栏仅告警")
     plan.guard_violations += check_plan_scale(
         plan.statement_count, plan.affected_tables, manifest, cfg.policy,
         first_sync=first_sync)
