@@ -157,10 +157,9 @@ class SqlSyncRuntime:
         report = SyncReport(run_id=run_id, plan_id=run_id, status="rolled_back",
                             total=len(statements))
         for i, stmt in enumerate(statements, 1):
-            from sqlalchemy import text as _text
-
             with self.local.begin() as conn:
-                conn.execute(_text(stmt))
+                # 原样下发（Down DDL 可能含 %(x)s / :x 等字面量）
+                conn.exec_driver_sql(stmt)
             report.executed = i
         from datetime import datetime, timezone
 

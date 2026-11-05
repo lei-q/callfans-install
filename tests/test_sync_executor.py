@@ -20,6 +20,10 @@ class FakeConn:
         return False
 
     def execute(self, stmt):
+        # 语句必须原样下发：text() 会把注释里的 :qty / %(qty)s 当绑定参数
+        raise AssertionError("DDL/DML 必须用 exec_driver_sql 原样执行")
+
+    def exec_driver_sql(self, stmt):
         self._engine.statements.append(str(stmt))
         if self._engine.fail_on and self._engine.fail_on in str(stmt):
             raise RuntimeError("boom")
@@ -126,6 +130,23 @@ class TestApply:
         assert report.executed == 1 and "第 2/2 条失败" in report.error
         assert "INSERT 1;" in report.error and "boom" in report.error
         assert state.get("sqlsync")["last_status"] == "failed"
+
+    def test_statement_literals_not_parsed_as_bind_params(self, tmp_path):
+        """数据/注释里的 :qty、%(qty)s 必须原样入库（2026-11-05 现场）。"""
+        from sqlalchemy import create_engine
+
+        engine = create_engine("sqlite://")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE notes (t TEXT)")
+        value = 'JSON:{"topicBizId":qty} 100% %(qty)s'
+        stmt = f"INSERT INTO notes (t) VALUES ('{value}')"
+        plan = _plan(data_tables=[TableDataDiff("notes", "t", changes=[
+            DataChange("notes", "insert", stmt, "DELETE FROM notes;")], inserts=1)])
+        executor, _ = _make(tmp_path, engine=engine)
+        report = executor.apply(plan)
+        assert report.status == "success", report.error
+        with engine.connect() as conn:
+            assert conn.exec_driver_sql("SELECT t FROM notes").scalar() == value
 
     def test_backup_failure_never_executes(self, tmp_path):
         engine = FakeEngine()

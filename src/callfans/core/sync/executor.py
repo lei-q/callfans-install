@@ -11,8 +11,6 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import text
-
 from ...paths import history_file as default_history_file
 from .. import history as history_mod
 from ..local import StateStore
@@ -102,7 +100,9 @@ class SqlSyncExecutor:
             })
             try:
                 with self.local_engine.begin() as conn:
-                    conn.execute(text(stmt))
+                    # exec_driver_sql：原样下发，不解析 :name / %(name)s 绑定参数
+                    # （列注释/默认值里可能含 "%(qty)s"、"100%" 等字面量）
+                    conn.exec_driver_sql(stmt)
             except Exception as e:
                 report.executed = i - 1
                 report.error = (
@@ -135,7 +135,7 @@ class SqlSyncExecutor:
             })
             try:
                 with self.local_engine.begin() as conn:
-                    conn.execute(text(stmt))
+                    conn.exec_driver_sql(stmt)
             except Exception as e:
                 rb.executed = i - 1
                 rb.error = f"回滚第 {i}/{len(down)} 条失败: {stmt[:120]} — {e}（可用备份表手工恢复）"

@@ -315,3 +315,13 @@ def test_skip_index_implicitly_created_by_foreign_key():
     assert [c.detail for c in child_indexes] == ["v"]
     assert any(c.kind == "add_table" and c.table == "child"
                for c in result.changes)
+
+
+def test_ddl_keeps_single_percent_for_raw_execution():
+    """编译 DDL 不做 %% 转义（执行器原样下发，转义不会被还原）。"""
+    md = MetaData()
+    Table("t_pct", md, Column("id", Integer, primary_key=True),
+          Column("d", String(10), server_default="100%"), schema="std")
+    result = diff_schemas(md, MetaData(), [_rule("t_pct")], db="std")
+    ddl = next(c for c in result.changes if c.kind == "add_table").ddl
+    assert "'100%'" in ddl and "%%" not in ddl

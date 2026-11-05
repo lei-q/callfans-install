@@ -18,7 +18,10 @@ from .config import TableRule
 from .normalize import column_fingerprint, index_fingerprint, table_fingerprint
 from .reflect import lookup_table
 
-_DIALECT = mysql.dialect()
+# 编译 DDL 用 raw 方言（paramstyle=named）：默认 format 会把字面量 `%` 转义成
+# `%%`，而执行器按原样下发（exec_driver_sql，不经 DBAPI 参数化），转义不会被还原。
+# 2026-11-05 现场：列注释含 :qty / 100% 的 DDL 被 text() 当绑定参数解析而中止。
+_DIALECT = mysql.dialect(paramstyle="named")
 
 KIND_LABEL = {
     "add_table": "新建表",

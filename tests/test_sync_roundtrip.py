@@ -380,6 +380,49 @@ def test_multi_db_index_change_carries_db_for_backup(sandbox, tmp_path):
     assert again.statement_count == 0, again.report_text()
 
 
+def test_colon_and_percent_literals_roundtrip(sandbox, tmp_path):
+    """列注释/默认值含 :qty 与 100%：原样执行且再 plan 零变更（2026-11-05 现场）。"""
+    from callfans.core.sync.backup import BackupManager
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.executor import SqlSyncExecutor
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    _exec_sql(cloud_port, [
+        "CREATE DATABASE IF NOT EXISTS std9",
+        """CREATE TABLE std9.pct_demo(
+            id INT NOT NULL AUTO_INCREMENT,
+            note VARCHAR(100) COMMENT 'JSON:{"topicBizId":qty},100%',
+            d VARCHAR(10) NOT NULL DEFAULT '100%',
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    ])
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", ""),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
+        policy=SyncPolicy(),
+    )
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    manifest = [TableRule(name="pct_demo")]
+
+    plan = build_plan(cfg, cloud, local, manifest)
+    assert any(c.kind == "add_table" for c in plan.schema_changes), plan.report_text()
+
+    def conn_factory():
+        import pymysql
+
+        return pymysql.connect(host="127.0.0.1", port=local_port, user="root",
+                               password="root", charset="utf8mb4")
+
+    executor = SqlSyncExecutor(cfg, local, BackupManager(conn_factory, tmp_path / "bak"),
+                               history_path=tmp_path / "h.jsonl")
+    report = executor.apply(plan)
+    assert report.status == "success", report.error
+
+    again = build_plan(cfg, cloud, local, manifest)
+    assert again.statement_count == 0, f"转义漂移:\n{again.report_text()}"
+
+
 def test_first_full_sync_downgrades_g2(sandbox):
     """首次全量/中断重跑 → G2 超限仅告警；已收敛的库有大改时仍 fatal。
 

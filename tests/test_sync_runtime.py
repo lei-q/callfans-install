@@ -247,6 +247,9 @@ class _ExecConn:
     def execute(self, sql, params=None):
         self._engine.statements.append(str(sql))
 
+    def exec_driver_sql(self, sql):
+        self._engine.statements.append(str(sql))
+
 
 class _ExecEngine:
     def __init__(self):
