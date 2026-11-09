@@ -12,6 +12,7 @@ from callfans.core.sync.schema_diff import SchemaChange
 class FakeConn:
     def __init__(self, engine):
         self._engine = engine
+        self.dialect = engine.dialect
 
     def __enter__(self):
         return self
@@ -30,9 +31,12 @@ class FakeConn:
 
 
 class FakeEngine:
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, paramstyle="qmark"):
+        from types import SimpleNamespace
+
         self.statements: list[str] = []
         self.fail_on = fail_on
+        self.dialect = SimpleNamespace(paramstyle=paramstyle)
 
     def begin(self):
         return FakeConn(self)
@@ -147,6 +151,31 @@ class TestApply:
         assert report.status == "success", report.error
         with engine.connect() as conn:
             assert conn.exec_driver_sql("SELECT t FROM notes").scalar() == value
+
+    def test_percent_escaped_once_for_format_drivers(self, tmp_path):
+        """MySQL（format/pyformat）会把字面 % 当格式化符：执行前须转成 %%。
+
+        2026-11-09 现场：DEFAULT '100%' 触发 ValueError: unsupported format
+        character "'"（pymysql 以空参执行 stmt % ()）。
+        """
+        engine = FakeEngine(paramstyle="format")
+        executor, _ = _make(tmp_path, engine=engine)
+        ddl = "CREATE TABLE t (d VARCHAR(5) DEFAULT '100%', c INT)"
+        report = executor.apply(_plan(schema=[
+            SchemaChange("add_table", "t", ddl, down_ddl="DROP TABLE t;")]))
+        assert report.status == "success", report.error
+        assert engine.statements == [ddl.replace("%", "%%")]
+
+    def test_percent_untouched_for_qmark_drivers(self, tmp_path):
+        """非 % 格式化的驱动（qmark/named）不做转义。"""
+        from types import SimpleNamespace
+
+        from callfans.core.sync.executor import raw_statement
+
+        conn = SimpleNamespace(dialect=SimpleNamespace(paramstyle="qmark"))
+        assert raw_statement(conn, "'100%'") == "'100%'"
+        conn = SimpleNamespace(dialect=SimpleNamespace(paramstyle="format"))
+        assert raw_statement(conn, "'100%'") == "'100%%'"
 
     def test_backup_failure_never_executes(self, tmp_path):
         engine = FakeEngine()

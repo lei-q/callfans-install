@@ -11,7 +11,7 @@ from ...paths import state_file
 from ..local import StateStore
 from .backup import BackupManager
 from .config import CloudSyncConfig, DbTarget
-from .executor import SqlSyncExecutor, SyncReport
+from .executor import SqlSyncExecutor, SyncReport, raw_statement
 from .manifest import get_manifest
 from .plan import SyncPlan, build_plan
 from .reflect import engine_for
@@ -158,8 +158,8 @@ class SqlSyncRuntime:
                             total=len(statements))
         for i, stmt in enumerate(statements, 1):
             with self.local.begin() as conn:
-                # 原样下发（Down DDL 可能含 %(x)s / :x 等字面量）
-                conn.exec_driver_sql(stmt)
+                # 原样下发（Down DDL 可能含 :x / % 等字面量），% 按 DBAPI 风格转义
+                conn.exec_driver_sql(raw_statement(conn, stmt))
             report.executed = i
         from datetime import datetime, timezone
 

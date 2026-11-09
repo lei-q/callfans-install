@@ -47,6 +47,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def raw_statement(conn, stmt: str) -> str:
+    """原样执行前的 DBAPI 转义：字面量 % → %%。
+
+    SQLAlchemy 以空参数调用 cursor.execute（参数为 ()/{}），pymysql（format/
+    pyformat）会对语句做 % 格式化——字面量 % 必须转义成 %%，否则 `100%'`
+    这类内容会报 ValueError: unsupported format character。
+    其他参数风格（qmark/named）不做 % 格式化，保持原样。
+    """
+    if getattr(getattr(conn, "dialect", None), "paramstyle", None) in ("format", "pyformat"):
+        return stmt.replace("%", "%%")
+    return stmt
+
+
 class SqlSyncExecutor:
     def __init__(self, cfg, local_engine, backup: BackupManager,
                  state: StateStore | None = None,
@@ -101,8 +114,8 @@ class SqlSyncExecutor:
             try:
                 with self.local_engine.begin() as conn:
                     # exec_driver_sql：原样下发，不解析 :name / %(name)s 绑定参数
-                    # （列注释/默认值里可能含 "%(qty)s"、"100%" 等字面量）
-                    conn.exec_driver_sql(stmt)
+                    # （列注释/默认值里可能含 "JSON:{...:qty}"、"100%" 等字面量）
+                    conn.exec_driver_sql(raw_statement(conn, stmt))
             except Exception as e:
                 report.executed = i - 1
                 report.error = (
@@ -135,7 +148,7 @@ class SqlSyncExecutor:
             })
             try:
                 with self.local_engine.begin() as conn:
-                    conn.exec_driver_sql(stmt)
+                    conn.exec_driver_sql(raw_statement(conn, stmt))
             except Exception as e:
                 rb.executed = i - 1
                 rb.error = f"回滚第 {i}/{len(down)} 条失败: {stmt[:120]} — {e}（可用备份表手工恢复）"
