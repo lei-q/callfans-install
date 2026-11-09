@@ -423,6 +423,52 @@ def test_colon_and_percent_literals_roundtrip(sandbox, tmp_path):
     assert again.statement_count == 0, f"转义漂移:\n{again.report_text()}"
 
 
+def test_index_comment_partition_text_not_treated_as_partition(sandbox, tmp_path):
+    """索引注释里出现 PARTITION BY 不能被当成表分区（1064，2026-11-09 现场）。"""
+    from callfans.core.sync.backup import BackupManager
+    from callfans.core.sync.config import CloudSyncConfig, DbTarget, SyncPolicy, TableRule
+    from callfans.core.sync.executor import SqlSyncExecutor
+    from callfans.core.sync.plan import build_plan
+    from callfans.core.sync.reflect import engine_for
+
+    cloud_port, local_port = sandbox
+    _exec_sql(cloud_port, [
+        "CREATE DATABASE IF NOT EXISTS std10",
+        """CREATE TABLE std10.part_idx(
+            id INT NOT NULL,
+            account_id VARCHAR(32),
+            PRIMARY KEY (id),
+            KEY idx_acc (account_id)
+                COMMENT '优化 PARTITION BY account_id + ORDER BY id）'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    ])
+    cfg = CloudSyncConfig(
+        cloud=DbTarget("127.0.0.1", cloud_port, "root", "root", ""),
+        local=DbTarget("127.0.0.1", local_port, "root", "root", ""),
+        policy=SyncPolicy(),
+    )
+    cloud, local = engine_for(cfg.cloud), engine_for(cfg.local)
+    manifest = [TableRule(name="part_idx")]
+
+    plan = build_plan(cfg, cloud, local, manifest)
+    ddl = next(c.ddl for c in plan.schema_changes if c.kind == "add_table")
+    assert "PARTITION" not in ddl, ddl
+
+    def conn_factory():
+        import pymysql
+
+        return pymysql.connect(host="127.0.0.1", port=local_port, user="root",
+                               password="root", charset="utf8mb4")
+
+    executor = SqlSyncExecutor(cfg, local, BackupManager(conn_factory, tmp_path / "bak"),
+                               history_path=tmp_path / "h.jsonl")
+    report = executor.apply(plan)
+    assert report.status == "success", report.error
+
+    again = build_plan(cfg, cloud, local, manifest)
+    assert again.statement_count == 0, again.report_text()
+
+
 def test_first_full_sync_downgrades_g2(sandbox):
     """首次全量/中断重跑 → G2 超限仅告警；已收敛的库有大改时仍 fatal。
 

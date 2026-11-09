@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy.engine import Engine, URL
 
 from .config import DbTarget
+
+log = logging.getLogger(__name__)
 
 
 def engine_for(target: DbTarget, pool_pre_ping: bool = True) -> Engine:
@@ -23,11 +27,51 @@ def engine_for(target: DbTarget, pool_pre_ping: bool = True) -> Engine:
 SYSTEM_DBS = {"information_schema", "mysql", "performance_schema", "sys", "callfans_sync"}
 
 
+def _partitioned_table_names(engine: Engine, schema: str) -> set[str]:
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT DISTINCT table_name FROM information_schema.partitions "
+            "WHERE table_schema = :d AND partition_name IS NOT NULL"), {"d": schema})
+        return {str(r[0]) for r in rows}
+
+
+def _drop_bogus_partition_options(engine: Engine, md: MetaData,
+                                  schema: str | None) -> list[str]:
+    """清掉误反射的分区定义。
+
+    SQLAlchemy 的 MySQL 反射用正则从 SHOW CREATE TABLE 里抓 "PARTITION BY"：
+    列注释里出现这几个字（如"…PARTITION BY url + ORDER BY collection_time）"）
+    就会被当成表分区，编译出的 CREATE TABLE 带上非法分区子句（1064）。
+    以 information_schema.partitions 为准：表中确无分区行的一律丢弃。
+    """
+    tables = [t for t in md.tables.values()
+              if t.dialect_options["mysql"].get("partition_by")]
+    if not tables:
+        return []
+    by_schema: dict[str, list] = {}
+    for t in tables:
+        by_schema.setdefault(t.schema or schema or (engine.url.database or ""), []).append(t)
+    fixed: list[str] = []
+    for sch, ts in by_schema.items():
+        if not sch:
+            continue  # 无库名无法核实，保守保留
+        partitioned = _partitioned_table_names(engine, sch)
+        for t in ts:
+            if t.name in partitioned:
+                continue
+            t.dialect_options["mysql"].pop("partition_by")
+            fixed.append(t.name)
+    return fixed
+
+
 def reflect_metadata(engine: Engine, only: list[str] | None = None,
                      schema: str | None = None) -> MetaData:
     """反射元数据；only 限定清单表；schema= 库名（多库模式跨库反射）。"""
     md = MetaData()
     md.reflect(bind=engine, only=only if only is not None else None, schema=schema)
+    fixed = _drop_bogus_partition_options(engine, md, schema)
+    if fixed:
+        log.warning("忽略被注释文本误判的分区定义（表中实际无分区）: %s", ", ".join(fixed))
     return md
 
 
