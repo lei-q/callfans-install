@@ -117,7 +117,8 @@ class DockerCLI:
             raise DockerError(f"docker login {registry} 超时") from e
         if proc.returncode != 0:
             raise DockerError(
-                f"docker login {registry} 失败: {self._failure_detail(proc.stderr, proc.stdout)}"
+                f"docker login {registry}（用户 {username}）失败: "
+                f"{self._failure_detail(proc.stderr, proc.stdout)}"
             )
 
     def compose_config(self, compose_file) -> dict:

@@ -36,3 +36,16 @@ def test_latin1_never_crashes(tmp_path):
 
 def test_missing_file_no_op(tmp_path):
     load_env_loose(tmp_path / "nope.env")
+
+
+def test_env_file_overrides_ambient_env(tmp_path, monkeypatch):
+    """应用 .env 是唯一事实源：系统/用户环境里残留的同名变量不得压过 .env。
+
+    2026-11-10 现场 401 排查：dotenv 默认 override=False，旧现场环境变量
+    HARBOR_PASSWORD=Harbor@12345（172 仓库密码）静默盖掉了 47 的 .env 值。
+    """
+    env = tmp_path / ".env"
+    env.write_text("HARBOR_USERNAME=admin\nHARBOR_PASSWORD=Callfans@123\n", encoding="utf-8")
+    monkeypatch.setenv("HARBOR_PASSWORD", "Harbor@12345")
+    cfg = Config.from_env(env)
+    assert cfg.harbor_password == "Callfans@123"

@@ -5,8 +5,11 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ...config import Config
+from ...paths import env_file
+from ..harbor import HarborClient
 from ..models import TYPE_BASE, TYPE_FRONTEND, TYPE_SERVER, UpdatePlan
 from .compose_env import (
     extract_tag_var, find_image_template, iter_image_templates, read_env,
@@ -20,6 +23,49 @@ _MIN_FREE_BYTES = 100 * 1024 * 1024  # 100MB
 
 class PreflightError(RuntimeError):
     pass
+
+
+def _credential_verdict(cfg: Config) -> bool | None:
+    """用同一凭据探测 Harbor 管理面：True 有效 / False 401 / None 无法判定。
+
+    docker login 走 daemon（系统代理/独立网络），与程序自身 httpx 直连不同；
+    401 时先分清是"凭据不对"还是"daemon 侧网络不对"，才能给出正确指引。
+    """
+    hc = HarborClient(cfg.harbor_api_url, cfg.harbor_project,
+                      cfg.harbor_username, cfg.harbor_password)
+    try:
+        return hc.credentials_valid()
+    except Exception:  # 诊断路径：任何异常都降级为"无法判定"，不掩盖原始登录错误
+        return None
+    finally:
+        hc.close()
+
+
+def _login_failure_hint(cfg: Config, registry: str) -> str:
+    # 管理面（HARBOR_API_URL）与本次要登录的 registry 必须是同一台仓库，
+    # 否则探测结论不适用（历史上现场同时存在 172 与 47 两台 Harbor）
+    reg_host = registry.split("/", 1)[0].split(":", 1)[0]
+    api_host = urlsplit(cfg.harbor_api_url).hostname or ""
+    if reg_host and api_host and reg_host != api_host:
+        return (
+            f"仓库 {registry} 与 HARBOR_API_URL（{api_host}）不是同一台，"
+            "无法用管理面校验；请确认 HARBOR_REGISTRY 与 HARBOR_USERNAME/PASSWORD 配套"
+        )
+    verdict = _credential_verdict(cfg)
+    if verdict is False:
+        return (
+            "Harbor 管理面同样 401：HARBOR_USERNAME/HARBOR_PASSWORD 无效。"
+            f"检查 {env_file()} 及系统/用户环境变量中的 HARBOR_PASSWORD"
+            "（同名键以 .env 为准；改完需重启服务/程序）"
+        )
+    if verdict is True:
+        return (
+            "Harbor 管理面认证通过、凭据有效；失败在 Docker daemon 侧"
+            "（daemon 走系统代理/独立网络，与程序直连不同）。"
+            "修复：Docker Desktop → Settings → Resources → Proxies 将仓库地址加入 bypass"
+            "（或 daemon.json 的 proxies.noProxy），Apply & Restart 后重试"
+        )
+    return "Harbor 管理面也不可达，无法判定凭据；请确认仓库地址、HARBOR_USERNAME/PASSWORD 与网络"
 
 
 def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None) -> None:
@@ -85,9 +131,7 @@ def preflight(cfg: Config, plan: UpdatePlan, docker: DockerCLI | None = None) ->
                         try:
                             d.login(registry, cfg.harbor_username, cfg.harbor_password)
                         except DockerError as e:
-                            errors.append(
-                                f"{e}（检查 HARBOR_USERNAME/PASSWORD 在该仓库有效）"
-                            )
+                            errors.append(f"{e}（{_login_failure_hint(cfg, registry)}）")
                 except Exception as e:
                     errors.append(f"docker/compose 不可用: {e}")
 

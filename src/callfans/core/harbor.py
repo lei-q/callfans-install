@@ -79,6 +79,27 @@ class HarborClient:
 
     # ---------- 管理面 /api/v2.0 ----------
 
+    def credentials_valid(self) -> bool:
+        """用当前账号探测管理面身份接口：True=凭据有效，False=401 拒绝。
+
+        仅供 preflight 在 docker login 失败后定位故障层：管理面能过而 daemon
+        登录失败，说明凭据本身没问题、失败在 Docker daemon 侧（代理/网络）。
+        连接失败抛 HarborError（无法判定，调用方自行降级）。
+        """
+        try:
+            resp = self._http.get("/api/v2.0/users/current")
+        except httpx.HTTPError as e:
+            raise HarborError(
+                f"Harbor {self.base_url} 不可达: {type(e).__name__}: {e}"
+            ) from e
+        if resp.status_code == 401:
+            return False
+        if resp.status_code >= 400:
+            raise HarborError(
+                f"GET /api/v2.0/users/current -> {resp.status_code}: {resp.text[:300]}"
+            )
+        return True
+
     def list_repos(self) -> list[str]:
         """返回 project 下全部 repo 全名（形如 'callfans/api'）。"""
         path = f"/api/v2.0/projects/{quote(self.project, safe='')}/repositories"

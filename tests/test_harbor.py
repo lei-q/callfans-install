@@ -61,3 +61,29 @@ def test_repo_tags_404_raises_harbor_error():
     hc = make_client(handler)
     with pytest.raises(Exception):
         hc.repo_tags("callfans/gone")
+
+
+def test_credentials_valid_true_on_200():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2.0/users/current"
+        return httpx.Response(200, json={"username": "admin"})
+
+    assert make_client(handler).credentials_valid() is True
+
+
+def test_credentials_valid_false_on_401():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"errors": [{"code": "UNAUTHORIZED"}]})
+
+    assert make_client(handler).credentials_valid() is False
+
+
+def test_credentials_valid_raises_on_network_error():
+    """网络不可达时无法判定，抛 HarborError 让 preflight 降级提示。"""
+    from callfans.core.harbor import HarborError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    with pytest.raises(HarborError):
+        make_client(handler).credentials_valid()

@@ -26,12 +26,16 @@ def load_env_loose(env_path: Path) -> None:
     v0.7.4 实测：安装器 Inno 的 SaveStringsToFile 按 ANSI(GBK) 写回 .env，
     中文注释变 GBK 字节，python-dotenv 按 UTF-8 读直接崩（UnicodeDecodeError）。
     latin-1 永不失败（乱码但不崩），服务可用 ASCII 键值正常。
+
+    override=True：应用自身的 .env 是唯一事实源。dotenv 默认不覆盖已有环境变量，
+    系统/用户环境里残留的同名变量（如旧现场留下的 HARBOR_PASSWORD=Harbor@12345）
+    会静默压过 .env，表面凭据"改对了"却仍 401（2026-11-10 实测复现）。
     """
     from dotenv import load_dotenv
 
     for enc in ("utf-8", "gbk", "latin-1"):
         try:
-            load_dotenv(env_path, encoding=enc)
+            load_dotenv(env_path, encoding=enc, override=True)
             return
         except UnicodeDecodeError:
             continue
